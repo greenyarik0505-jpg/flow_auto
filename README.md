@@ -52,12 +52,15 @@
             │                             │
             └──────────────┬──────────────┘
                            ▼
-             gflow-cli + Playwright Chromium
+          flow_engine.py (Direct Automation)
                            │
                            ▼
-          Google Flow (aisandbox-pa.googleapis.com)
-            ├── Veo 3.1 / Gemini Omni  ──►  .mp4 видео
-            └── Imagen 4 / Nano Banana ──►  .png фото
+            Playwright Chromium (Headless)
+                           │
+                           ▼
+         Google Flow (flow.google.com / Veo / Omni)
+            ├── Gemini Omni / Veo 3.1 ──► ./output/videos/*.mp4
+            └── Imagen 4 / Nano Banana ──► ./output/images/*.png
 ```
 
 ---
@@ -277,6 +280,7 @@ flow_auto/
 ├── output/                 # Папка с сгенерированными видео и фото
 │   ├── videos/             # Готовые .mp4 клипы
 │   └── images/             # Готовые .png фото
+├── flow_engine.py          # Автономный движок генерации и скачивания (Playwright)
 ├── login.bat               # Батник разовой авторизации в Google Flow
 ├── login.py                # Скрипт авторизации Chrome
 ├── generate.bat            # Быстрый запуск генерации видео из терминала
