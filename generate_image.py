@@ -80,6 +80,26 @@ def generate_image(
 
     ret = process.poll()
     if ret != 0:
+        print(f"\n[*] Переключение на прямой режим автоматизации Google Flow...")
+        try:
+            import asyncio
+            from flow_engine import generate_image_auto
+            res_files = asyncio.run(
+                generate_image_auto(
+                    prompt=prompt,
+                    out_dir=out_dir,
+                    model=model,
+                    aspect=aspect,
+                    count=count,
+                    profile=profile,
+                )
+            )
+            if res_files:
+                print(f"\n[✔] Изображения успешно сохранены ({len(res_files)} шт.) в: {out_dir}")
+                return
+        except Exception as exc:
+            print(f"[-] Ошибка прямого режима: {exc}")
+
         print(f"\n[-] Ошибка генерации изображения (код {ret}).")
         if not check_auth():
             print("\n[!] Похоже, сессия не авторизована или истекла.")

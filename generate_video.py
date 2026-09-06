@@ -82,6 +82,26 @@ def generate_video(
 
     ret = process.poll()
     if ret != 0:
+        print(f"\n[*] Переключение на прямой режим автоматизации Google Flow...")
+        try:
+            import asyncio
+            from flow_engine import generate_video_auto
+            res_file = asyncio.run(
+                generate_video_auto(
+                    prompt=prompt,
+                    out_dir=out_dir,
+                    model=model,
+                    aspect=aspect,
+                    duration=duration,
+                    profile=profile,
+                )
+            )
+            if res_file and res_file.exists():
+                print(f"\n[✔] Видео успешно сгенерировано и сохранено: {res_file}")
+                return
+        except Exception as exc:
+            print(f"[-] Ошибка прямого режима: {exc}")
+
         print(f"\n[-] Ошибка генерации (код {ret}).")
         if not check_auth():
             print("\n[!] Похоже, сессия не авторизована или истекла.")
