@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+import chrome_profiles
 
 BASE_DIR = Path(__file__).parent.resolve()
 VENV_GFLOW = BASE_DIR / ".venv" / "Scripts" / "gflow.exe"
@@ -38,8 +39,10 @@ app = FastAPI(
   * Модели: `nano-pro` (Nano Banana Pro — детализированное), `image4` (Imagen 4 — фотореализм), `nano2` (сверхбыстрое).
   * Форматы: 16:9, 9:16, 1:1 (квадратное), 4:3, 3:4.
   * Количество: от 1 до 4 вариантов за один запрос.
+* **Мультиаккаунты (40+ профилей)**:
+  * Поддержка выбора профиля Chrome (`profile`: "Default", "2", "Profile 2", "auto").
     """,
-    version="1.1.0",
+    version="1.2.0",
 )
 
 app.add_middleware(
@@ -71,6 +74,10 @@ class GenerateVideoRequest(BaseModel):
         default=None,
         description="Длительность клипа в секундах (omni-flash поддерживает 4, 6, 8, 10)"
     )
+    profile: Optional[str] = Field(
+        default=None,
+        description="Профиль Chrome (например: 2, 'Profile 2', 'GeminiPro' или 'auto' для ротации 40 аккаунтов)"
+    )
     wait: bool = Field(
         default=False,
         description="Если True — запрос подождет окончания рендера и вернет видео сразу. Если False — вернет task_id для опроса."
@@ -96,17 +103,33 @@ class GenerateImageRequest(BaseModel):
         le=4,
         description="Количество генерируемых картинок (от 1 до 4)"
     )
+    profile: Optional[str] = Field(
+        default=None,
+        description="Профиль Chrome (например: 2, 'Profile 2', 'GeminiPro' или 'auto' для ротации 40 аккаунтов)"
+    )
     wait: bool = Field(
         default=True,
         description="Если True — запрос подождет генерации (~15 сек.) и сразу вернет список ссылок на фото."
     )
 
 def check_gflow_auth() -> dict:
+    profiles = chrome_profiles.get_all_chrome_profiles()
+    active_chrome = [p for p in profiles if p["has_cookies"]]
+    if active_chrome:
+        return {
+            "authenticated": True,
+            "method": "chrome_profiles",
+            "profiles_count": len(profiles),
+            "active_count": len(active_chrome),
+            "detail": f"Обнаружено {len(active_chrome)} активных профилей Chrome с готовой сессией."
+        }
+
     cmd = [get_gflow_bin(), "auth", "status"]
     proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     is_authenticated = proc.returncode == 0
     return {
         "authenticated": is_authenticated,
+        "method": "gflow",
         "detail": proc.stdout.strip() if is_authenticated else (proc.stderr.strip() or proc.stdout.strip() or "Не авторизовано")
     }
 
@@ -119,9 +142,8 @@ async def run_video_task(task_id: str, req: GenerateVideoRequest):
     task_out_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        get_gflow_bin(),
-        "video",
-        "t2v",
+        sys.executable,
+        str(BASE_DIR / "generate_video.py"),
         req.prompt,
         "--model", req.model,
         "--aspect", req.aspect,
@@ -130,6 +152,8 @@ async def run_video_task(task_id: str, req: GenerateVideoRequest):
 
     if req.duration:
         cmd.extend(["--duration", str(req.duration)])
+    if req.profile:
+        cmd.extend(["--profile", str(req.profile)])
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -157,7 +181,7 @@ async def run_video_task(task_id: str, req: GenerateVideoRequest):
                 task["note"] = "Генерация завершена, но .mp4 не найден"
         else:
             task["status"] = "failed"
-            task["error"] = f"gflow завершился с кодом {proc.returncode}"
+            task["error"] = f"Процесс генерации завершился с кодом {proc.returncode}"
 
     except Exception as e:
         task["status"] = "failed"
@@ -174,15 +198,16 @@ async def run_image_task(task_id: str, req: GenerateImageRequest):
     task_out_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        get_gflow_bin(),
-        "image",
-        "t2i",
+        sys.executable,
+        str(BASE_DIR / "generate_image.py"),
         req.prompt,
         "--model", req.model,
         "--aspect", req.aspect,
         "-n", str(req.count),
-        "--out", str(task_out_dir),
+        "--out-dir", str(task_out_dir),
     ]
+    if req.profile:
+        cmd.extend(["--profile", str(req.profile)])
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -213,7 +238,7 @@ async def run_image_task(task_id: str, req: GenerateImageRequest):
                 task["note"] = "Генерация завершена, но файлы .png не найдены"
         else:
             task["status"] = "failed"
-            task["error"] = f"gflow image завершился с кодом {proc.returncode}"
+            task["error"] = f"Процесс генерации завершился с кодом {proc.returncode}"
 
     except Exception as e:
         task["status"] = "failed"
@@ -241,6 +266,27 @@ def index():
 def get_auth_status():
     """Проверка текущего статуса авторизации в Google Flow"""
     return check_gflow_auth()
+
+@app.get("/api/v1/profiles", tags=["Профили Chrome"])
+def get_profiles_list():
+    """
+    Возвращает список всех профилей Google Chrome в системе (поддержка 40+ аккаунтов).
+    Каждый профиль можно использовать для генерации, передав его имя в поле 'profile'.
+    """
+    profiles = chrome_profiles.get_all_chrome_profiles()
+    return {
+        "count": len(profiles),
+        "ready_count": sum(1 for p in profiles if p["has_cookies"]),
+        "profiles": [
+            {
+                "folder": p["folder"],
+                "name": p["name"],
+                "masked_email": chrome_profiles.mask_email(p["email"]),
+                "ready": p["has_cookies"]
+            }
+            for p in profiles
+        ]
+    }
 
 @app.get("/api/v1/models", tags=["Статус и Авторизация"])
 def list_models():

@@ -112,7 +112,7 @@ def generate_video(
 
 def main():
     parser = argparse.ArgumentParser(description="Google Flow (Veo / Gemini Omni) Video Generator")
-    parser.add_argument("prompt", type=str, help="Текстовый промпт для генерации видео")
+    parser.add_argument("prompt", type=str, nargs="?", default=None, help="Текстовый промпт для генерации видео")
     parser.add_argument(
         "--model",
         type=str,
@@ -138,16 +138,33 @@ def main():
         "--out-dir",
         type=str,
         default=None,
-        help="Папка для сохранения видео (по умолчанию ./output)",
+        help="Папка для сохранения видео (по умолчанию ./output/videos)",
     )
     parser.add_argument(
         "--profile",
         type=str,
         default=None,
-        help="Имя профиля Flow (если используется несколько аккаунтов)",
+        help="Профиль Chrome (например: 2, 'Profile 2', 'GeminiPro' или 'auto' для ротации 40 аккаунтов)",
+    )
+    parser.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="Показать список всех доступных профилей Chrome и выйти",
     )
 
     args = parser.parse_args()
+
+    if args.list_profiles:
+        import list_profiles
+        list_profiles.main()
+        return
+
+    if not args.prompt:
+        parser.print_help()
+        print("\n[!] Ошибка: Укажите текстовый промпт в кавычках.")
+        print('    Пример: .\\generate.bat "A cute robot waving hello" --profile 2')
+        sys.exit(1)
+
     out_dir = Path(args.out_dir) if args.out_dir else None
 
     generate_video(

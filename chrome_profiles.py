@@ -1,0 +1,308 @@
+"""
+Модуль для работы с профилями Google Chrome.
+Позволяет использовать готовые сессии и аккаунты из Google Chrome (40+ профилей)
+без повторной авторизации и без конфликтов блокировки (ProcessSingleton).
+"""
+import os
+import sys
+import json
+import time
+import shutil
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+BASE_DIR = Path(__file__).parent.resolve()
+CACHE_PROFILES_DIR = BASE_DIR / ".flow_profiles"
+ROTATION_STATE_FILE = BASE_DIR / ".flow_rotation.json"
+
+def get_chrome_user_data_path(custom_path: Optional[str] = None) -> Path:
+    """Возвращает путь к каталогу данных Google Chrome (User Data)."""
+    if custom_path:
+        p = Path(custom_path).resolve()
+        if p.exists():
+            return p
+    
+    env_custom = os.environ.get("CHROME_USER_DATA")
+    if env_custom:
+        p = Path(env_custom).resolve()
+        if p.exists():
+            return p
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        default_path = Path(local_app_data) / "Google" / "Chrome" / "User Data"
+        if default_path.exists():
+            return default_path
+
+    user_home = Path.home()
+    fallback = user_home / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
+    return fallback
+
+def get_all_chrome_profiles(user_data_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """
+    Сканирует Google Chrome User Data и возвращает список всех обнаруженных профилей.
+    Считывает имя, отображаемое название и статус наличия авторизационных данных.
+    """
+    if user_data_dir is None:
+        user_data_dir = get_chrome_user_data_path()
+
+    if not user_data_dir.exists():
+        return []
+
+    local_state_file = user_data_dir / "Local State"
+    info_cache: Dict[str, Any] = {}
+
+    if local_state_file.exists():
+        try:
+            content = local_state_file.read_text(encoding="utf-8", errors="ignore")
+            data = json.loads(content)
+            info_cache = data.get("profile", {}).get("info_cache", {})
+        except Exception:
+            pass
+
+    profiles: List[Dict[str, Any]] = []
+
+    # 1. Проверяем профили из info_cache
+    for folder_name, info in info_cache.items():
+        folder_path = user_data_dir / folder_name
+        if not folder_path.exists() or not folder_path.is_dir():
+            continue
+
+        name = info.get("name", folder_name)
+        user_name = info.get("user_name", "")
+        has_cookies = (folder_path / "Network" / "Cookies").exists() or (folder_path / "Cookies").exists()
+
+        profiles.append({
+            "folder": folder_name,
+            "name": name,
+            "email": user_name,
+            "has_cookies": has_cookies,
+            "path": folder_path
+        })
+
+    # 2. Если какие-то папки не попали в info_cache
+    known_folders = {p["folder"] for p in profiles}
+    for sub in user_data_dir.iterdir():
+        if sub.is_dir() and sub.name not in known_folders:
+            if sub.name == "Default" or sub.name.startswith("Profile "):
+                has_pref = (sub / "Preferences").exists()
+                has_cookies = (sub / "Network" / "Cookies").exists() or (sub / "Cookies").exists()
+                if has_pref or has_cookies:
+                    profiles.append({
+                        "folder": sub.name,
+                        "name": sub.name,
+                        "email": "",
+                        "has_cookies": has_cookies,
+                        "path": sub
+                    })
+
+    def sort_key(item: Dict[str, Any]) -> int:
+        folder = item["folder"]
+        if folder == "Default":
+            return 0
+        if folder.startswith("Profile "):
+            try:
+                return int(folder.split(" ", 1)[1])
+            except ValueError:
+                return 9999
+        return 99999
+
+    profiles.sort(key=sort_key)
+    return profiles
+
+def resolve_profile_folder(selector: Optional[str] = None, user_data_dir: Optional[Path] = None) -> str:
+    """
+    Разрешает селектор профиля в имя реальной папки Chrome ('Default', 'Profile 2', и т.д.).
+    """
+    profiles = get_all_chrome_profiles(user_data_dir)
+    if not profiles:
+        return "Default"
+
+    if selector is None or str(selector).strip() == "":
+        for p in profiles:
+            if p["folder"] == "Default" and p["has_cookies"]:
+                return "Default"
+        for p in profiles:
+            if p["has_cookies"]:
+                return p["folder"]
+        return profiles[0]["folder"]
+
+    sel = str(selector).strip()
+
+    if sel.lower() in ("auto", "rotate", "next"):
+        return get_next_rotated_profile(profiles)
+
+    # Точное совпадение с папкой
+    for p in profiles:
+        if p["folder"].lower() == sel.lower():
+            return p["folder"]
+
+    # Числовой ввод: 2 -> 'Profile 2'
+    if sel.isdigit():
+        target = f"Profile {sel}"
+        for p in profiles:
+            if p["folder"].lower() == target.lower():
+                return p["folder"]
+        idx = int(sel) - 1
+        if 0 <= idx < len(profiles):
+            return profiles[idx]["folder"]
+
+    # Поиск по отображаемому имени в Chrome
+    for p in profiles:
+        if p["name"].lower() == sel.lower():
+            return p["folder"]
+
+    for p in profiles:
+        if sel.lower() in p["name"].lower():
+            return p["folder"]
+
+    return sel
+
+def get_next_rotated_profile(profiles: List[Dict[str, Any]]) -> str:
+    """Round-robin ротация среди доступных профилей."""
+    active_profiles = [p["folder"] for p in profiles if p["has_cookies"]]
+    if not active_profiles:
+        active_profiles = [p["folder"] for p in profiles]
+    if not active_profiles:
+        return "Default"
+
+    last_index = -1
+    if ROTATION_STATE_FILE.exists():
+        try:
+            data = json.loads(ROTATION_STATE_FILE.read_text(encoding="utf-8"))
+            last_profile = data.get("last_profile", "")
+            if last_profile in active_profiles:
+                last_index = active_profiles.index(last_profile)
+        except Exception:
+            pass
+
+    next_index = (last_index + 1) % len(active_profiles)
+    chosen_profile = active_profiles[next_index]
+
+    try:
+        ROTATION_STATE_FILE.write_text(
+            json.dumps({"last_profile": chosen_profile, "updated_at": time.time()}),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+    return chosen_profile
+
+def sync_chrome_profile_for_automation(
+    profile_folder: str,
+    user_data_dir: Optional[Path] = None,
+    force_sync: bool = False
+) -> Path:
+    """
+    Создает изолированный снимок сессии для Playwright, предотвращая ошибку ProcessSingleton.
+    """
+    if user_data_dir is None:
+        user_data_dir = get_chrome_user_data_path()
+
+    src_profile = user_data_dir / profile_folder
+    if not src_profile.exists():
+        if profile_folder == "Default":
+            src_profile = user_data_dir / "Default"
+
+    dest_dir = CACHE_PROFILES_DIR / profile_folder.replace(" ", "_")
+    dest_profile = dest_dir / "Default"
+    dest_profile.mkdir(parents=True, exist_ok=True)
+
+    # 1. Local State
+    src_local_state = user_data_dir / "Local State"
+    dest_local_state = dest_dir / "Local State"
+    if src_local_state.exists():
+        try:
+            if not dest_local_state.exists() or src_local_state.stat().st_mtime > dest_local_state.stat().st_mtime or force_sync:
+                shutil.copy2(src_local_state, dest_local_state)
+        except Exception:
+            pass
+
+    # 2. Файлы сессий
+    session_files = ["Preferences", "Secure Preferences", "Web Data", "Login Data"]
+    for fname in session_files:
+        src_f = src_profile / fname
+        dest_f = dest_profile / fname
+        if src_f.exists():
+            try:
+                if not dest_f.exists() or src_f.stat().st_mtime > dest_f.stat().st_mtime or force_sync:
+                    shutil.copy2(src_f, dest_f)
+            except Exception:
+                pass
+
+    # 3. Cookies
+    src_net = src_profile / "Network"
+    dest_net = dest_profile / "Network"
+    if src_net.exists():
+        dest_net.mkdir(parents=True, exist_ok=True)
+        for net_f in src_net.glob("*"):
+            if net_f.is_file():
+                try:
+                    df = dest_net / net_f.name
+                    if not df.exists() or net_f.stat().st_mtime > df.stat().st_mtime or force_sync:
+                        shutil.copy2(net_f, df)
+                except Exception:
+                    pass
+
+    # 4. Local Storage, IndexedDB, Session Storage
+    storage_dirs = ["Local Storage", "Session Storage", "IndexedDB"]
+    for sdir in storage_dirs:
+        src_s = src_profile / sdir
+        dest_s = dest_profile / sdir
+        if src_s.exists():
+            try:
+                shutil.copytree(src_s, dest_s, dirs_exist_ok=True)
+            except Exception:
+                pass
+
+    return dest_dir
+
+def mask_email(email: str) -> str:
+    """Маскирует email для безопасного отображения без утечки данных."""
+    if not email or "@" not in email:
+        return email
+    parts = email.split("@", 1)
+    username = parts[0]
+    domain = parts[1]
+    if len(username) <= 3:
+        masked_user = username[0] + "***"
+    else:
+        masked_user = username[:2] + "***" + username[-1]
+    return f"{masked_user}@{domain}"
+
+SESSIONS_DIR = BASE_DIR / ".flow_sessions"
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+def find_chrome_executable() -> Optional[Path]:
+    """Ищет путь к исполняемому файлу Google Chrome на Windows."""
+    candidates = [
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+def is_cdp_available(host: str = "127.0.0.1", port: int = 9222, timeout: float = 0.5) -> bool:
+    """Проверяет, запущен ли Chrome с портом отладки CDP (например, port 9222)."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def get_session_file(profile_folder: str) -> Path:
+    """Возвращает путь к сохраненному файлу состояния сессии Playwright."""
+    safe_name = profile_folder.replace(" ", "_").lower()
+    return SESSIONS_DIR / f"session_{safe_name}.json"

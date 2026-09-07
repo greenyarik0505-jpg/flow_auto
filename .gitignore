@@ -17,3 +17,7 @@ profile_*/
 auth*.json
 cookie*.json
 tokens*.json
+.flow_profiles/
+.flow_sessions/
+.flow_rotation.json
+test_profile_clone/
