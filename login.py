@@ -24,59 +24,145 @@ def get_gflow_bin() -> str:
         return str(VENV_GFLOW)
     return "gflow"
 
+import json
+import asyncio
+from playwright.async_api import async_playwright
+
+async def authorize_profile_interactive(folder: str, display_name: str) -> bool:
+    synced_dir = chrome_profiles.sync_chrome_profile_for_automation(folder, force_sync=True)
+    session_file = chrome_profiles.get_session_file(folder)
+
+    print("\n" + "=" * 80)
+    print(f" 🚀 АВТОРИЗАЦИЯ GOOGLE FLOW: {folder} ({display_name})")
+    print("=" * 80)
+    print("В открывшемся окне браузера:")
+    print(" 1. Нажмите 'Войти' / 'Sign in' / 'Попробовать Flow' / 'Try Flow'.")
+    print(" 2. Выберите ваш аккаунт Google из списка (1 клик).")
+    print(" 👉 Как только вы окажетесь на главной странице Flow, сессия сохранится АВТОМАТИЧЕСКИ!")
+    print("=" * 80 + "\n")
+
+    async with async_playwright() as pw:
+        ctx = await pw.chromium.launch_persistent_context(
+            user_data_dir=str(synced_dir),
+            channel="chrome",
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        try:
+            await page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
+        except Exception:
+            pass
+
+        print("[+] Окно открыто. Ожидание входа в Google Flow (до 180 секунд)...")
+        logged_in = False
+        for _ in range(90):
+            await asyncio.sleep(2)
+            try:
+                if page.is_closed():
+                    print("[-] Окно браузера было закрыто пользователем.")
+                    break
+
+                url = page.url
+                if "flow.google.com" in url and "about" not in url and "accounts.google.com" not in url:
+                    logged_in = True
+                    break
+
+                composer = page.locator("[contenteditable='true'].ProseMirror, [contenteditable='true']").first
+                if await composer.count():
+                    logged_in = True
+                    break
+
+                prj = page.locator("a[href*='/project/']").first
+                if await prj.count():
+                    logged_in = True
+                    break
+            except Exception:
+                break
+
+        if logged_in:
+            await asyncio.sleep(2)
+            state = await ctx.storage_state()
+            session_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+            print("\n" + "=" * 80)
+            print(f" [✔] СЕССИЯ ДЛЯ АККАУНТА '{folder}' УСПЕШНО СОХРАНЕНА!")
+            print("=" * 80)
+            print(f" Файл сессии: {session_file.name}")
+            print(" Теперь этот аккаунт готов к фоновой генерации без всплывающих окон!\n")
+            await ctx.close()
+            return True
+        else:
+            print(f"[-] Не удалось зафиксировать вход для профиля '{folder}'.")
+            await ctx.close()
+            return False
+
 def main():
-    parser = argparse.ArgumentParser(description="Google Flow: Проверка сессий и авторизация")
-    parser.add_argument("--profile", type=str, default=None, help="Имя или номер профиля Chrome")
-    parser.add_argument("--new", action="store_true", help="Открыть браузер для входа в новый аккаунт с нуля")
+    parser = argparse.ArgumentParser(description="Google Flow: Авторизация аккаунтов Chrome (40+ профилей)")
+    parser.add_argument("profile", type=str, nargs="?", default=None, help="Номер или имя профиля (например: 2, 'Profile 2')")
+    parser.add_argument("--profile", dest="profile_opt", type=str, default=None, help="Имя или номер профиля")
+    parser.add_argument("--all", action="store_true", help="Авторизовать все доступные профили Chrome по очереди")
+    parser.add_argument("--list", action="store_true", help="Только показать статус сессий всех профилей")
     args = parser.parse_args()
 
+    profile_selector = args.profile or args.profile_opt
+
     profiles = chrome_profiles.get_all_chrome_profiles()
-    active_profiles = [p for p in profiles if p["has_cookies"]]
-
-    print("=" * 80)
-    print(" 🚀 GOOGLE FLOW: ПРОВЕРКА АККАУНТОВ И АВТОРИЗАЦИИ")
-    print("=" * 80)
-
-    if active_profiles and not args.new:
-        print(f"\n[✔] Обнаружено {len(profiles)} профилей Google Chrome ({len(active_profiles)} с активной сессией)!")
-        print("Вам НЕ НУЖНО логиниться заново — генератор использует готовые аккаунты из Chrome.\n")
-
-        print(f"{'#':<3} | {'Папка':<12} | {'Имя в Chrome':<22} | {'Google Email':<24} | {'Готов к Flow'}")
-        print("-" * 80)
-        for idx, p in enumerate(profiles, start=1):
-            folder = p["folder"]
-            name = p["name"]
-            if len(name) > 20:
-                name = name[:19] + "…"
-            email = chrome_profiles.mask_email(p["email"]) or "(локальный)"
-            status = "✔ ГОТОВ" if p["has_cookies"] else "⚠ НЕТ КУКОВ"
-            print(f"{idx:<3} | {folder:<12} | {name:<22} | {email:<24} | {status}")
-        print("-" * 80)
-
-        # Если запросили синхронизировать конкретный профиль
-        target_profile = chrome_profiles.resolve_profile_folder(args.profile)
-        print(f"\n[+] Синхронизация сессии для профиля: {target_profile}...")
-        synced_path = chrome_profiles.sync_chrome_profile_for_automation(target_profile, force_sync=True)
-        print(f"[✔] Профиль '{target_profile}' успешно подготовлен в: {synced_path}")
-
-        print("\n💡 Теперь можно генерировать видео и фото:")
-        print('  .\\generate.bat "A futuristic city in neon rain" --profile 2')
-        print('  .\\generate.bat "A cybernetic dragon" --profile auto  (ротация по 40 аккаунтам)')
-        print('  .\\generate_image.bat "A cute neon red panda" --profile 3')
-        print("  .\\start_server.bat  (запуск REST API и Swagger UI)\n")
+    if not profiles:
+        print("[-] Профили Chrome не найдены.")
         return
 
-    # Если профилей нет или запрошен вход в абсолютно новый аккаунт (--new)
-    print("\n[i] Запуск браузера для ручного входа в новый аккаунт...")
-    cmd = [get_gflow_bin(), "auth", "login", "--browser", "chrome"]
-    if args.profile:
-        cmd.extend(["--profile", args.profile])
+    print("=" * 80)
+    print(" 🚀 GOOGLE FLOW: СТАТУС СЕССИЙ АККАУНТОВ (40+ ПРОФИЛЕЙ)")
+    print("=" * 80)
+    print(f"Каталог данных: {chrome_profiles.get_chrome_user_data_path()}\n")
 
-    result = subprocess.run(cmd)
-    if result.returncode == 0:
-        print("\n[✔] Авторизация успешно сохранена!")
+    print(f"{'#':<3} | {'Папка':<12} | {'Имя в Chrome':<20} | {'Email':<22} | {'Сессия Flow'}")
+    print("-" * 80)
+
+    for idx, p in enumerate(profiles, start=1):
+        folder = p["folder"]
+        name = p["name"][:18]
+        email = chrome_profiles.mask_email(p["email"]) or "(локальный)"
+        if len(email) > 20:
+            email = email[:19] + "…"
+        s_file = chrome_profiles.get_session_file(folder)
+        has_session = s_file.exists()
+        status = "✔ ГОТОВ К РАБОТЕ" if has_session else "⏳ НУЖЕН ВХОД (1 клик)"
+        print(f"{idx:<3} | {folder:<12} | {name:<20} | {email:<22} | {status}")
+    print("-" * 80)
+
+    if args.list:
+        return
+
+    if args.all:
+        for p in profiles:
+            folder = p["folder"]
+            s_file = chrome_profiles.get_session_file(folder)
+            if not s_file.exists():
+                asyncio.run(authorize_profile_interactive(folder, p["name"]))
+        print("\n[✔] Авторизация всех профилей завершена!")
+        return
+
+    if not profile_selector:
+        target_p = None
+        for p in profiles:
+            s_file = chrome_profiles.get_session_file(p["folder"])
+            if not s_file.exists():
+                target_p = p
+                break
+        if not target_p:
+            target_p = profiles[0]
+        chosen_folder = target_p["folder"]
+        chosen_name = target_p["name"]
     else:
-        print(f"\n[-] Процесс завершился с кодом {result.returncode}.")
+        chosen_folder = chrome_profiles.resolve_profile_folder(profile_selector)
+        chosen_name = chosen_folder
+        for p in profiles:
+            if p["folder"] == chosen_folder:
+                chosen_name = p["name"]
+                break
+
+    asyncio.run(authorize_profile_interactive(chosen_folder, chosen_name))
 
 if __name__ == "__main__":
     main()

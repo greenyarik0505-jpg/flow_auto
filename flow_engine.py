@@ -169,13 +169,13 @@ async def ensure_flow_workspace(page):
                 await start_btn.click()
             await asyncio.sleep(5)
 
-    # Если редиректнуло на логин Google
     if "accounts.google.com" in page.url:
-        print("\n[!] Внимание: Требуется авторизация в Google Flow.")
-        print("💡 Для мгновенного использования ваших 40 аккаунтов Chrome без повторного ввода:")
-        print("   1. Запустите Chrome через: .\\start_chrome_debug.bat")
-        print("   2. Либо сохраните сессию аккаунта: .\\capture_session.bat\n")
-        raise RuntimeError("Требуется авторизация. Запустите .\\start_chrome_debug.bat или .\\capture_session.bat")
+        print("\n[!] Внимание: Требуется разовая авторизация в Google Flow.")
+        print("💡 Для входа в ваши аккаунты запустите:")
+        print("   .\\login.bat               (для первого аккаунта)")
+        print("   .\\login.bat 2             (для второго аккаунта)")
+        print("   .\\login.bat --all         (для всех аккаунтов по очереди)\n")
+        raise RuntimeError("Требуется авторизация в Google Flow. Запустите .\\login.bat")
 
     # Переход в проект если находимся на списке проектов
     composer = page.locator("[contenteditable='true'].ProseMirror, [contenteditable='true']").first

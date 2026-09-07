@@ -112,13 +112,21 @@ def main():
         print('   .\\generate_image.bat "Ваш промпт" --profile auto\n')
     else:
         print("\n" + "=" * 80)
-        print(" [!] ВНИМАНИЕ: Порт 9222 не открылся.")
+        print(" 💡 ПОРТ ОТЛАДКИ НЕ ТРЕБУЕТСЯ: ИСПОЛЬЗУЙТЕ ПРЯМОЙ ВХОД В 1 КЛИК")
         print("=" * 80)
-        print(" Обычно это означает, что Chrome остался запущен в фоновом режиме (в трее около часов).")
-        print(" Что сделать:")
-        print(" 1. Закройте все окна Chrome и значок Chrome около часов (в трее).")
-        print(" 2. Запустите этот скрипт еще раз: .\\start_chrome_debug.bat")
-        print(" Или используйте прямой вход: .\\login.bat\n")
+        print(" Google Chrome заблокировал внешний порт отладки для безопасности.")
+        print(" Но вы можете войти в Google Flow прямо сейчас в 1 клик через login.bat!\n")
+        
+        try:
+            ans = input("Открыть окно входа в Google Flow прямо сейчас? (y/n) [Enter = Да]: ").strip().lower()
+        except Exception:
+            ans = "y"
+            
+        if ans in ("", "y", "yes", "д", "да"):
+            import login
+            login.main()
+        else:
+            print("\nВы всегда можете запустить вход командой: .\\login.bat\n")
 
 if __name__ == "__main__":
     main()
