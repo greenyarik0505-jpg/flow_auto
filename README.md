@@ -103,11 +103,16 @@ Google защищает студию Flow через OAuth и reCAPTCHA Enterpri
   ```powershell
   .\generate.bat "Cyberpunk neon city" --profile "GeminiPro"
   ```
-* **Автоматическая ротация (round-robin по всем 40 аккаунтам):**
+* **Автоматическая ротация и мгновенный обход лимитов (--profile auto):**
   ```powershell
   .\generate.bat "Cinematic nature drone shot" --profile auto
   ```
-  *(При каждом следующем запуске система автоматически переключается на следующий аккаунт из пула, распределяя лимиты и кредиты!)*
+  *(Система распределяет генерации между всеми 40 профилями. **Если на текущем аккаунте закончились кредиты (`0 credits`) или сработал лимит Google Flow, генератор мгновенно переходит на следующий рабочий аккаунт и повторяет генерацию без остановки!**)*
+* **Сброс таймеров исчерпанных лимитов:**
+  ```powershell
+  .\generate.bat --reset-limits
+  ```
+  *(Сбрасывает 12-часовые кулдауны для всех профилей, возвращая их в пул активных).*
 
 ---
 
@@ -115,12 +120,12 @@ Google защищает студию Flow через OAuth и reCAPTCHA Enterpri
 
 ### Простой запуск:
 ```powershell
-.\generate.bat "A futuristic flying car over neon cyberpunk city at night, rain reflections, 4k cinematic"
+.\generate.bat "A futuristic flying car over neon cyberpunk city at night, rain reflections, 4k cinematic" --profile auto
 ```
 
 ### Запуск через Python с гибкими настройками:
 ```powershell
-.\.venv\Scripts\python.exe generate_video.py "Cinematic drone shot of sunset over mountain peaks" --model omni-flash --aspect 16:9 --duration 8
+.\.venv\Scripts\python.exe generate_video.py "Cinematic drone shot of sunset over mountain peaks" --model omni-flash --aspect 16:9 --duration 8 --profile auto
 ```
 
 ### Доступные флаги:
@@ -131,6 +136,9 @@ Google защищает студию Flow через OAuth и reCAPTCHA Enterpri
 | `--aspect` | `16:9`, `9:16` | Формат кадра: горизонтальный или вертикальный |
 | `--duration` | `4`, `6`, `8`, `10` | Длительность клипа в секундах (`omni-flash` поддерживает до 10 сек.) |
 | `--out-dir` | Путь к папке | Каталог для сохранения (по умолчанию `./output/videos`) |
+| `--profile` | `auto`, `2`, `"Profile 2"` | Профиль Chrome. При `auto` автоматически переключается при исчерпании лимитов |
+| `--list-profiles` | Флаг | Показать таблицу всех профилей Chrome в системе |
+| `--reset-limits` | Флаг | Сбросить кэш исчерпанных квот/лимитов для всех профилей |
 
 Готовые файлы `.mp4` автоматически сохраняются в папку `./output/videos`.
 
@@ -142,12 +150,12 @@ Google защищает студию Flow через OAuth и reCAPTCHA Enterpri
 
 ### Простой запуск:
 ```powershell
-.\generate_image.bat "A cute red panda wearing a tiny astronaut suit on Mars, highly detailed, photorealistic"
+.\generate_image.bat "A cute red panda wearing a tiny astronaut suit on Mars, highly detailed, photorealistic" --profile auto
 ```
 
 ### Запуск через Python с параметрами:
 ```powershell
-.\.venv\Scripts\python.exe generate_image.py "Cyberpunk neon street ramen shop in rain" --model image4 --aspect 16:9 -n 2
+.\.venv\Scripts\python.exe generate_image.py "Cyberpunk neon street ramen shop in rain" --model image4 --aspect 16:9 -n 2 --profile auto
 ```
 
 ### Доступные флаги:
@@ -158,6 +166,9 @@ Google защищает студию Flow через OAuth и reCAPTCHA Enterpri
 | `--aspect` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | Соотношение сторон фото |
 | `-n`, `--count` | `1`, `2`, `3`, `4` | Количество генерируемых вариантов |
 | `--out-dir` | Путь к папке | Папка сохранения (по умолчанию `./output/images`) |
+| `--profile` | `auto`, `2`, `"Profile 2"` | Профиль Chrome. При `auto` автоматически переключается при исчерпании лимитов |
+| `--list-profiles` | Флаг | Показать таблицу всех профилей Chrome в системе |
+| `--reset-limits` | Флаг | Сбросить кэш исчерпанных квот/лимитов для всех профилей |
 
 ---
 

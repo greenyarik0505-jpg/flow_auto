@@ -29,25 +29,36 @@ def main():
         return
 
     print(f"Обнаружено профилей: {len(profiles)}\n")
-    print(f"{'#':<3} | {'Папка':<12} | {'Имя в Chrome':<22} | {'Google Email':<24} | {'Готов к Flow'}")
+    print(f"{'#':<3} | {'Папка':<12} | {'Имя в Chrome':<20} | {'Google Email':<22} | {'Статус'}")
     print("-" * 80)
 
+    import time
     for idx, p in enumerate(profiles, start=1):
         folder = p["folder"]
         name = p["name"]
-        if len(name) > 20:
-            name = name[:19] + "…"
+        if len(name) > 18:
+            name = name[:17] + "…"
         email = chrome_profiles.mask_email(p["email"]) or "(локальный)"
-        status = "✔ ГОТОВ" if p["has_cookies"] else "⚠ НЕТ КУКОВ"
-        print(f"{idx:<3} | {folder:<12} | {name:<22} | {email:<24} | {status}")
+        if len(email) > 20:
+            email = email[:19] + "…"
+        if p.get("is_exhausted"):
+            until_ts = p.get("cooldown_until", 0)
+            t_str = time.strftime('%H:%M', time.localtime(until_ts)) if until_ts else ""
+            status = f"⏳ ЛИМИТ (до {t_str})"
+        elif p["has_cookies"]:
+            status = "✔ ГОТОВ"
+        else:
+            status = "⚠ НЕТ КУКОВ"
+        print(f"{idx:<3} | {folder:<12} | {name:<20} | {email:<22} | {status}")
 
     print("-" * 80)
     print("\n💡 Как использовать профили для генерации:")
-    print('  1. По номеру:          .\\generate.bat "Промпт" --profile 2')
-    print('  2. По имени папки:     .\\generate.bat "Промпт" --profile "Profile 2"')
-    print('  3. По имени в Chrome:  .\\generate.bat "Промпт" --profile "GeminiPro"')
-    print('  4. Авто-ротация:       .\\generate.bat "Промпт" --profile auto   (переключает 40 аккаунтов по кругу)')
-    print('  5. Для фото:           .\\generate_image.bat "Промпт" --profile 2\n')
+    print('  1. Авто-ротация:       .\\generate.bat "Промпт" --profile auto   (переключает при исчерпании лимитов)')
+    print('  2. По номеру:          .\\generate.bat "Промпт" --profile 2')
+    print('  3. По имени папки:     .\\generate.bat "Промпт" --profile "Profile 2"')
+    print('  4. По имени в Chrome:  .\\generate.bat "Промпт" --profile "GeminiPro"')
+    print('  5. Сброс лимитов:      .\\generate.bat --reset-limits')
+    print('  6. Для фото:           .\\generate_image.bat "Промпт" --profile auto\n')
 
 if __name__ == "__main__":
     main()

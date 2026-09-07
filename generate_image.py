@@ -28,6 +28,8 @@ def check_auth() -> bool:
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return result.returncode == 0
 
+import chrome_profiles
+
 def generate_image(
     prompt: str,
     model: str = "nano-pro",
@@ -38,6 +40,58 @@ def generate_image(
 ):
     out_dir = out_dir or OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Режим автоматической ротации при исчерпании лимитов
+    if profile and profile.lower() in ("auto", "rotate", "next"):
+        all_profiles = chrome_profiles.get_all_chrome_profiles()
+        max_attempts = max(len(all_profiles), 1)
+        attempted_profiles: set[str] = set()
+
+        print(f"\n[Auto-Rotation] Режим автоматической ротации аккаунтов (всего обнаружено {len(all_profiles)} профилей).")
+        for attempt in range(max_attempts):
+            candidate = chrome_profiles.resolve_profile_folder("auto", exclude=attempted_profiles)
+            if candidate in attempted_profiles:
+                print("\n[!] Все доступные профили Chrome исчерпали квоту генераций!")
+                exhausted = chrome_profiles.get_exhausted_profiles()
+                if exhausted:
+                    print("    Статус исчерпанных профилей:")
+                    import time
+                    for f, info in exhausted.items():
+                        cooldown_ts = info.get("cooldown_until", 0)
+                        print(f"    - {f}: {info.get('reason')} (до {time.strftime('%H:%M:%S', time.localtime(cooldown_ts))})")
+                print("    Для сброса таймеров выполните: .\\generate_image.bat --reset-limits\n")
+                sys.exit(1)
+
+            print(f"\n[Auto-Rotation] 🚀 Попытка генерации через аккаунт '{candidate}' ({attempt + 1}/{max_attempts})...")
+            try:
+                import asyncio
+                from flow_engine import generate_image_auto
+                res_files = asyncio.run(
+                    generate_image_auto(
+                        prompt=prompt,
+                        out_dir=out_dir,
+                        model=model,
+                        aspect=aspect,
+                        count=count,
+                        profile=candidate,
+                    )
+                )
+                if res_files:
+                    print(f"\n[✔] Изображения успешно сохранены ({len(res_files)} шт.) в: {out_dir}")
+                    return
+            except chrome_profiles.QuotaExceededError as qe:
+                print(f"\n[Auto-Rotation] ⚠️ На профиле '{qe.profile}' закончились кредиты/квота: {qe.reason}")
+                chrome_profiles.mark_profile_exhausted(qe.profile, qe.reason)
+                attempted_profiles.add(qe.profile)
+                print(f"[Auto-Rotation] 🔄 Автоматический переход на следующий аккаунт из пула...")
+                continue
+            except Exception as exc:
+                print(f"[-] Ошибка генерации на профиле '{candidate}': {exc}")
+                attempted_profiles.add(candidate)
+                continue
+
+        print("\n[-] Не удалось завершить генерацию изображений ни на одном из доступных аккаунтов.")
+        sys.exit(1)
 
     cmd = [
         get_gflow_bin(),
@@ -97,6 +151,11 @@ def generate_image(
             if res_files:
                 print(f"\n[✔] Изображения успешно сохранены ({len(res_files)} шт.) в: {out_dir}")
                 return
+        except chrome_profiles.QuotaExceededError as qe:
+            print(f"\n[-] Лимит генераций исчерпан для профиля '{qe.profile}': {qe.reason}")
+            print("💡 СОВЕТ: Запустите генерацию с флагом --profile auto для автоматического переключения на следующий аккаунт!")
+            print(f'   Пример: .\\generate_image.bat "{prompt}" --profile auto\n')
+            sys.exit(1)
         except Exception as exc:
             print(f"[-] Ошибка прямого режима: {exc}")
 
@@ -149,8 +208,18 @@ def main():
         action="store_true",
         help="Показать список всех доступных профилей Chrome и выйти",
     )
+    parser.add_argument(
+        "--reset-limits",
+        action="store_true",
+        help="Сбросить статус исчерпанных лимитов/квот для всех профилей и выйти",
+    )
 
     args = parser.parse_args()
+
+    if args.reset_limits:
+        chrome_profiles.reset_exhausted_limits()
+        print("\n[✔] Кэш исчерпанных лимитов успешно сброшен. Все профили снова активны!\n")
+        return
 
     if args.list_profiles:
         import list_profiles
@@ -160,7 +229,7 @@ def main():
     if not args.prompt:
         parser.print_help()
         print("\n[!] Ошибка: Укажите текстовый промпт в кавычках.")
-        print('    Пример: .\\generate_image.bat "Futuristic car" --profile 2')
+        print('    Пример: .\\generate_image.bat "Futuristic car" --profile auto')
         sys.exit(1)
 
     out_dir = Path(args.out_dir) if args.out_dir else None

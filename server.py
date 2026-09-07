@@ -271,22 +271,32 @@ def get_auth_status():
 def get_profiles_list():
     """
     Возвращает список всех профилей Google Chrome в системе (поддержка 40+ аккаунтов).
-    Каждый профиль можно использовать для генерации, передав его имя в поле 'profile'.
+    Каждый профиль можно использовать для генерации, передав его имя в поле 'profile' или 'auto' для авто-ротации.
     """
     profiles = chrome_profiles.get_all_chrome_profiles()
     return {
         "count": len(profiles),
-        "ready_count": sum(1 for p in profiles if p["has_cookies"]),
+        "ready_count": sum(1 for p in profiles if p["has_cookies"] and not p.get("is_exhausted")),
+        "exhausted_count": sum(1 for p in profiles if p.get("is_exhausted")),
         "profiles": [
             {
                 "folder": p["folder"],
                 "name": p["name"],
                 "masked_email": chrome_profiles.mask_email(p["email"]),
-                "ready": p["has_cookies"]
+                "ready": p["has_cookies"] and not p.get("is_exhausted"),
+                "is_exhausted": p.get("is_exhausted", False),
+                "cooldown_until": p.get("cooldown_until"),
+                "exhausted_reason": p.get("exhausted_reason"),
             }
             for p in profiles
         ]
     }
+
+@app.post("/api/v1/profiles/reset-limits", tags=["Профили Chrome"])
+def reset_profiles_limits():
+    """Сбросить статус исчерпанных лимитов для всех профилей."""
+    chrome_profiles.reset_exhausted_limits()
+    return {"status": "ok", "message": "Лимиты всех профилей успешно сброшены"}
 
 @app.get("/api/v1/models", tags=["Статус и Авторизация"])
 def list_models():

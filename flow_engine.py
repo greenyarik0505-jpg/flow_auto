@@ -21,14 +21,71 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 
 import chrome_profiles
 
-def get_automation_profile(profile_selector: Optional[str] = None) -> tuple[Path, str]:
+QUOTA_KEYWORDS = [
+    "0 credits", "0 credit", "no credits", "out of credits", "not enough credits",
+    "credit balance", "insufficient credits", "0 кредитов", "0 кредитів",
+    "недостаточно кредитов", "не вистачає кредитів", "исчерпан лимит",
+    "превышен лимит", "достигнут лимит", "quota exceeded", "resource_exhausted",
+    "rate limit", "upgrade plan", "купить кредиты", "підписк", "подписк",
+    "you have reached your limit", "limit reached", "try again later"
+]
+
+async def check_ui_quota_limits(page) -> Optional[str]:
+    """
+    Проверяет элементы интерфейса Google Flow на наличие признаков исчерпания квоты или кредитов.
+    """
+    # 1. Проверяем оверлеи, снекбары, алерты
+    alerts = page.locator("mat-snack-bar-container, [role='alert'], [role='dialog'], .cdk-overlay-pane, .error-banner, .toast")
+    try:
+        count = await alerts.count()
+        for i in range(min(count, 6)):
+            el = alerts.nth(i)
+            txt = (await el.inner_text() or "").lower()
+            for kw in QUOTA_KEYWORDS:
+                if kw in txt:
+                    return f"Всплывающее предупреждение: {txt.strip()[:150]}"
+    except Exception:
+        pass
+
+    # 2. Проверяем счетчик кредитов в интерфейсе
+    credits = page.locator("[class*='credit'], [class*='quota'], [aria-label*='credit'], [aria-label*='кредит']")
+    try:
+        count = await credits.count()
+        for i in range(min(count, 6)):
+            el = credits.nth(i)
+            txt = (await el.inner_text() or "").lower()
+            if any(k in txt for k in ["0 credit", "0 credits", "0 кредитов", "0 кредитів", "0 /", "0/"]):
+                return f"Нулевой баланс кредитов: {txt.strip()}"
+    except Exception:
+        pass
+
+    # 3. Проверяем статус кнопки генерации
+    btn = page.locator("button.generate-icon-button, button[type='submit']").first
+    try:
+        if await btn.count():
+            classes = await btn.get_attribute("class") or ""
+            disabled = await btn.get_attribute("disabled")
+            if "mat-button-disabled" in classes or disabled is not None:
+                aria = (await btn.get_attribute("aria-label") or "").lower()
+                for kw in QUOTA_KEYWORDS:
+                    if kw in aria:
+                        return f"Кнопка генерации отключена: {aria.strip()}"
+    except Exception:
+        pass
+
+    return None
+
+def get_automation_profile(
+    profile_selector: Optional[str] = None,
+    exclude: Optional[set[str]] = None,
+) -> tuple[Path, str, str]:
     """
     Разрешает и синхронизирует профиль Google Chrome для автоматизации без блокировок.
-    Возвращает (путь_к_изолированному_профилю, имя_профиля_chrome).
+    Возвращает (путь_к_изолированному_профилю, имя_для_вывода, папка_профиля_chrome).
     """
     chrome_profiles_list = chrome_profiles.get_all_chrome_profiles()
     if chrome_profiles_list:
-        chosen_folder = chrome_profiles.resolve_profile_folder(profile_selector)
+        chosen_folder = chrome_profiles.resolve_profile_folder(profile_selector, exclude=exclude)
         name = chosen_folder
         for p in chrome_profiles_list:
             if p["folder"] == chosen_folder:
@@ -36,7 +93,7 @@ def get_automation_profile(profile_selector: Optional[str] = None) -> tuple[Path
                 break
         
         synced_path = chrome_profiles.sync_chrome_profile_for_automation(chosen_folder)
-        return synced_path, name
+        return synced_path, name, chosen_folder
 
     # Резервный поиск в старом каталоге ffroliva/gflow-cli
     local_app_data = os.environ.get("LOCALAPPDATA", "")
@@ -44,14 +101,14 @@ def get_automation_profile(profile_selector: Optional[str] = None) -> tuple[Path
     if profile_selector:
         p = base / f"profile_{profile_selector}"
         if p.exists():
-            return p, p.name
-        return base / profile_selector, str(profile_selector)
+            return p, p.name, p.name
+        return base / profile_selector, str(profile_selector), str(profile_selector)
 
     if (base / "profile_default").exists():
-        return base / "profile_default", "profile_default"
-    return base / "profile_default", "profile_default"
+        return base / "profile_default", "profile_default", "Default"
+    return base / "profile_default", "profile_default", "Default"
 
-async def get_browser_context(pw, profile_path: Path, profile_selector: Optional[str] = None):
+async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Default"):
     """
     Получает контекст браузера:
     1. Если Chrome запущен на порту 9222 (start_chrome_debug.bat) — подключается через CDP.
@@ -62,7 +119,6 @@ async def get_browser_context(pw, profile_path: Path, profile_selector: Optional
         print("    [CDP] Обнаружен запущенный Google Chrome на порту 9222! Подключение...")
         browser = await pw.chromium.connect_over_cdp("http://127.0.0.1:9222")
         ctx = browser.contexts[0]
-        # Проверяем, есть ли уже открытая вкладка Flow
         flow_page = None
         for p in ctx.pages:
             if "flow.google.com" in p.url and "about" not in p.url:
@@ -71,8 +127,7 @@ async def get_browser_context(pw, profile_path: Path, profile_selector: Optional
         page = flow_page if flow_page else await ctx.new_page()
         return ctx, page, True, browser
 
-    chosen_folder = chrome_profiles.resolve_profile_folder(profile_selector)
-    session_file = chrome_profiles.get_session_file(chosen_folder)
+    session_file = chrome_profiles.get_session_file(profile_folder)
     storage_state_arg = str(session_file) if session_file.exists() else None
 
     if storage_state_arg:
@@ -87,6 +142,7 @@ async def get_browser_context(pw, profile_path: Path, profile_selector: Optional
 
     if storage_state_arg:
         try:
+            import json
             state_data = json.loads(session_file.read_text(encoding="utf-8"))
             if "cookies" in state_data:
                 await ctx.add_cookies(state_data["cookies"])
@@ -136,21 +192,38 @@ async def generate_image_auto(
     aspect: str = "16:9",
     count: int = 1,
     profile: Optional[str] = None,
+    exclude: Optional[set[str]] = None,
 ) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    profile_path, profile_display_name = get_automation_profile(profile)
+    profile_path, profile_display_name, profile_folder = get_automation_profile(profile, exclude=exclude)
     
     print(f"\n[+] Автоматическая генерация фото через Google Flow...")
-    print(f"    Промпт: {prompt}")
+    print(f"    Промпт : {prompt}")
     print(f"    Профиль: {profile_display_name}")
-    print(f"    Папка : {out_dir}\n")
+    print(f"    Папка  : {out_dir}\n")
 
     saved_files: list[Path] = []
+    quota_state = {"exhausted": False, "reason": ""}
 
     async with async_playwright() as pw:
-        context, page, is_cdp, browser = await get_browser_context(pw, profile_path, profile)
+        context, page, is_cdp, browser = await get_browser_context(pw, profile_path, profile_folder)
+
+        def on_response(resp):
+            if resp.status == 429:
+                quota_state["exhausted"] = True
+                quota_state["reason"] = f"HTTP 429 Too Many Requests (Превышен лимит запросов Flow)"
+
+        page.on("response", on_response)
+
         try:
             await ensure_flow_workspace(page)
+
+            # Проверка лимитов на загруженной странице
+            quota_err = await check_ui_quota_limits(page)
+            if quota_err or quota_state["exhausted"]:
+                reason = quota_err or quota_state["reason"]
+                chrome_profiles.mark_profile_exhausted(profile_folder, reason)
+                raise chrome_profiles.QuotaExceededError(profile_folder, reason)
 
             composer = page.locator("[contenteditable='true'].ProseMirror, [contenteditable='true']").first
             await composer.click()
@@ -159,14 +232,35 @@ async def generate_image_auto(
 
             submit_btn = page.locator("button.generate-icon-button, button[type='submit']").first
             if await submit_btn.count():
+                classes = await submit_btn.get_attribute("class") or ""
+                disabled = await submit_btn.get_attribute("disabled")
+                if "mat-button-disabled" in classes or disabled is not None:
+                    quota_err = await check_ui_quota_limits(page) or "Кнопка генерации отключена (0 кредитов)"
+                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
+                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
                 await submit_btn.click()
             else:
                 await page.keyboard.press("Enter")
+
+            await asyncio.sleep(2)
+            quota_err = await check_ui_quota_limits(page)
+            if quota_err or quota_state["exhausted"]:
+                reason = quota_err or quota_state["reason"]
+                chrome_profiles.mark_profile_exhausted(profile_folder, reason)
+                raise chrome_profiles.QuotaExceededError(profile_folder, reason)
 
             print("[+] Запрос отправлен в Flow Agent, ожидание рендера...")
             prev_count = await page.locator("img.image, img.image-thumbnail").count()
             for i in range(16):
                 await asyncio.sleep(3)
+                if quota_state["exhausted"]:
+                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_state["reason"])
+                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_state["reason"])
+                quota_err = await check_ui_quota_limits(page)
+                if quota_err:
+                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
+                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
+
                 current_imgs = await page.locator("img.image, img.image-thumbnail").all()
                 if len(current_imgs) > prev_count:
                     print(f"[✔] Найдено {len(current_imgs) - prev_count} новых изображений!")
@@ -204,21 +298,38 @@ async def generate_video_auto(
     aspect: str = "16:9",
     duration: Optional[int] = None,
     profile: Optional[str] = None,
+    exclude: Optional[set[str]] = None,
 ) -> Optional[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    profile_path, profile_display_name = get_automation_profile(profile)
+    profile_path, profile_display_name, profile_folder = get_automation_profile(profile, exclude=exclude)
 
     print(f"\n[+] Автоматическая генерация видео через Google Flow (Omni / Veo)...")
-    print(f"    Промпт: {prompt}")
+    print(f"    Промпт : {prompt}")
     print(f"    Профиль: {profile_display_name}")
-    print(f"    Папка : {out_dir}\n")
+    print(f"    Папка  : {out_dir}\n")
 
     out_file: Optional[Path] = None
+    quota_state = {"exhausted": False, "reason": ""}
 
     async with async_playwright() as pw:
-        context, page, is_cdp, browser = await get_browser_context(pw, profile_path, profile)
+        context, page, is_cdp, browser = await get_browser_context(pw, profile_path, profile_folder)
+
+        def on_response(resp):
+            if resp.status == 429:
+                quota_state["exhausted"] = True
+                quota_state["reason"] = f"HTTP 429 Too Many Requests (Превышен лимит запросов Flow)"
+
+        page.on("response", on_response)
+
         try:
             await ensure_flow_workspace(page)
+
+            # Проверка лимитов на загруженной странице
+            quota_err = await check_ui_quota_limits(page)
+            if quota_err or quota_state["exhausted"]:
+                reason = quota_err or quota_state["reason"]
+                chrome_profiles.mark_profile_exhausted(profile_folder, reason)
+                raise chrome_profiles.QuotaExceededError(profile_folder, reason)
 
             add_btn = page.locator("button:has(mat-icon:has-text('add'))").first
             if await add_btn.count():
@@ -247,11 +358,32 @@ async def generate_video_auto(
                 await asyncio.sleep(1)
                 submit_btn = page.locator("button.generate-icon-button, button:has(mat-icon:has-text('arrow_forward'))").last
                 if await submit_btn.count():
+                    classes = await submit_btn.get_attribute("class") or ""
+                    disabled = await submit_btn.get_attribute("disabled")
+                    if "mat-button-disabled" in classes or disabled is not None:
+                        quota_err = await check_ui_quota_limits(page) or "Кнопка генерации отключена (0 кредитов)"
+                        chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
+                        raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
                     await submit_btn.click()
                     print("[+] Запрос на генерацию видео отправлен. Рендеринг клипа...")
 
+            await asyncio.sleep(2)
+            quota_err = await check_ui_quota_limits(page)
+            if quota_err or quota_state["exhausted"]:
+                reason = quota_err or quota_state["reason"]
+                chrome_profiles.mark_profile_exhausted(profile_folder, reason)
+                raise chrome_profiles.QuotaExceededError(profile_folder, reason)
+
             for _ in range(24):
                 await asyncio.sleep(5)
+                if quota_state["exhausted"]:
+                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_state["reason"])
+                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_state["reason"])
+                quota_err = await check_ui_quota_limits(page)
+                if quota_err:
+                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
+                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
+
                 dl_btn = page.locator("button:has(mat-icon:has-text('download'))").first
                 if await dl_btn.count():
                     classes = await dl_btn.get_attribute("class") or ""

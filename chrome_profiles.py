@@ -21,6 +21,87 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 BASE_DIR = Path(__file__).parent.resolve()
 CACHE_PROFILES_DIR = BASE_DIR / ".flow_profiles"
 ROTATION_STATE_FILE = BASE_DIR / ".flow_rotation.json"
+LIMITS_FILE = BASE_DIR / ".flow_limits.json"
+
+class QuotaExceededError(Exception):
+    """Исключение при исчерпании лимитов / кредитов / квоты аккаунта Google Flow."""
+    def __init__(self, profile: str, reason: str = "Лимит генераций исчерпан"):
+        self.profile = profile
+        self.reason = reason
+        super().__init__(f"Лимит генераций исчерпан для профиля '{profile}': {reason}")
+
+def load_limits_state() -> Dict[str, Any]:
+    """Загружает статус исчерпанных лимитов профилей."""
+    if LIMITS_FILE.exists():
+        try:
+            return json.loads(LIMITS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_limits_state(data: Dict[str, Any]) -> None:
+    """Сохраняет статус исчерпанных лимитов профилей."""
+    try:
+        LIMITS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+def mark_profile_exhausted(folder: str, reason: str = "Лимит исчерпан (0 кредитов)", cooldown_hours: float = 12.0) -> None:
+    """Помечает профиль как исчерпавший лимит с указанием времени кулдауна (по умолчанию 12 часов)."""
+    data = load_limits_state()
+    now = time.time()
+    cooldown_sec = cooldown_hours * 3600.0
+    data[folder] = {
+        "exhausted_at": now,
+        "cooldown_until": now + cooldown_sec,
+        "cooldown_hours": cooldown_hours,
+        "reason": reason,
+    }
+    save_limits_state(data)
+
+def is_profile_exhausted(folder: str) -> bool:
+    """Проверяет, находится ли профиль в состоянии исчерпанного лимита."""
+    data = load_limits_state()
+    if folder not in data:
+        return False
+    entry = data[folder]
+    cooldown_until = entry.get("cooldown_until", 0)
+    now = time.time()
+    if now >= cooldown_until:
+        del data[folder]
+        save_limits_state(data)
+        return False
+    return True
+
+def get_exhausted_profiles() -> Dict[str, Any]:
+    """Возвращает актуальный словарь всех профилей с исчерпанным лимитом (очищает истекшие)."""
+    data = load_limits_state()
+    now = time.time()
+    active_exhausted = {}
+    changed = False
+    for folder, entry in list(data.items()):
+        if now < entry.get("cooldown_until", 0):
+            active_exhausted[folder] = entry
+        else:
+            del data[folder]
+            changed = True
+    if changed:
+        save_limits_state(data)
+    return active_exhausted
+
+def reset_exhausted_limits(folder: Optional[str] = None) -> None:
+    """Сбрасывает статус исчерпанных лимитов для одного или всех профилей."""
+    if folder:
+        data = load_limits_state()
+        if folder in data:
+            del data[folder]
+            save_limits_state(data)
+    else:
+        if LIMITS_FILE.exists():
+            try:
+                LIMITS_FILE.unlink()
+            except Exception:
+                pass
 
 def get_chrome_user_data_path(custom_path: Optional[str] = None) -> Path:
     """Возвращает путь к каталогу данных Google Chrome (User Data)."""
@@ -115,29 +196,52 @@ def get_all_chrome_profiles(user_data_dir: Optional[Path] = None) -> List[Dict[s
         return 99999
 
     profiles.sort(key=sort_key)
+
+    exhausted_map = get_exhausted_profiles()
+    for p in profiles:
+        folder = p["folder"]
+        if folder in exhausted_map:
+            p["is_exhausted"] = True
+            p["cooldown_until"] = exhausted_map[folder].get("cooldown_until")
+            p["exhausted_reason"] = exhausted_map[folder].get("reason", "")
+        else:
+            p["is_exhausted"] = False
+            p["cooldown_until"] = None
+            p["exhausted_reason"] = None
+
     return profiles
 
-def resolve_profile_folder(selector: Optional[str] = None, user_data_dir: Optional[Path] = None) -> str:
+def resolve_profile_folder(
+    selector: Optional[str] = None,
+    user_data_dir: Optional[Path] = None,
+    exclude: Optional[set[str]] = None,
+) -> str:
     """
     Разрешает селектор профиля в имя реальной папки Chrome ('Default', 'Profile 2', и т.д.).
+    Если указан 'auto', выбирает следующий профиль с учетом исключений и кулдаунов.
     """
     profiles = get_all_chrome_profiles(user_data_dir)
     if not profiles:
         return "Default"
 
+    exclude_set = set(exclude or [])
+
     if selector is None or str(selector).strip() == "":
         for p in profiles:
-            if p["folder"] == "Default" and p["has_cookies"]:
+            if p["folder"] == "Default" and p["has_cookies"] and not p.get("is_exhausted") and p["folder"] not in exclude_set:
                 return "Default"
         for p in profiles:
-            if p["has_cookies"]:
+            if p["has_cookies"] and not p.get("is_exhausted") and p["folder"] not in exclude_set:
+                return p["folder"]
+        for p in profiles:
+            if p["folder"] not in exclude_set:
                 return p["folder"]
         return profiles[0]["folder"]
 
     sel = str(selector).strip()
 
     if sel.lower() in ("auto", "rotate", "next"):
-        return get_next_rotated_profile(profiles)
+        return get_next_rotated_profile(profiles, exclude=exclude_set, user_data_dir=user_data_dir)
 
     # Точное совпадение с папкой
     for p in profiles:
@@ -165,26 +269,62 @@ def resolve_profile_folder(selector: Optional[str] = None, user_data_dir: Option
 
     return sel
 
-def get_next_rotated_profile(profiles: List[Dict[str, Any]]) -> str:
-    """Round-robin ротация среди доступных профилей."""
-    active_profiles = [p["folder"] for p in profiles if p["has_cookies"]]
-    if not active_profiles:
-        active_profiles = [p["folder"] for p in profiles]
-    if not active_profiles:
+def get_next_rotated_profile(
+    profiles: Optional[List[Dict[str, Any]]] = None,
+    exclude: Optional[set[str]] = None,
+    user_data_dir: Optional[Path] = None,
+) -> str:
+    """
+    Round-robin ротация среди доступных профилей.
+    Автоматически пропускает аккаунты, у которых исчерпан лимит (кулдаун) или которые переданы в exclude.
+    """
+    if profiles is None:
+        profiles = get_all_chrome_profiles(user_data_dir)
+
+    if not profiles:
         return "Default"
+
+    exclude_set = set(exclude or [])
+    exhausted_map = get_exhausted_profiles()
+    all_exhausted = set(exhausted_map.keys())
+
+    # 1. Приоритет: профили с куками, не исчерпанные и не в exclude
+    candidates = [
+        p["folder"] for p in profiles 
+        if p.get("has_cookies") and p["folder"] not in exclude_set and p["folder"] not in all_exhausted
+    ]
+
+    # 2. Если все с куками исчерпаны, пробуем любые не исчерпанные и не в exclude
+    if not candidates:
+        candidates = [
+            p["folder"] for p in profiles 
+            if p["folder"] not in exclude_set and p["folder"] not in all_exhausted
+        ]
+
+    # 3. Если ВСЕ профили исчерпаны, но есть не опробованные в текущем запуске (exclude_set)
+    if not candidates and exclude_set:
+        candidates = [
+            p["folder"] for p in profiles 
+            if p["folder"] not in exclude_set
+        ]
+
+    # 4. Если вообще всё исключено или исчерпано, возвращаем хотя бы один рабочий
+    if not candidates:
+        active = [p["folder"] for p in profiles if p.get("has_cookies")]
+        return active[0] if active else profiles[0]["folder"]
 
     last_index = -1
     if ROTATION_STATE_FILE.exists():
         try:
             data = json.loads(ROTATION_STATE_FILE.read_text(encoding="utf-8"))
             last_profile = data.get("last_profile", "")
-            if last_profile in active_profiles:
-                last_index = active_profiles.index(last_profile)
+            if last_profile in candidates:
+                last_index = candidates.index(last_profile)
         except Exception:
             pass
 
-    next_index = (last_index + 1) % len(active_profiles)
-    chosen_profile = active_profiles[next_index]
+    next_index = (last_index + 1) % len(candidates)
+    chosen_profile = candidates[next_index]
 
     try:
         ROTATION_STATE_FILE.write_text(
