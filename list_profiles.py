@@ -41,12 +41,15 @@ def main():
         email = chrome_profiles.mask_email(p["email"]) or "(локальный)"
         if len(email) > 20:
             email = email[:19] + "…"
+        is_verified, _ = chrome_profiles.verify_session(folder)
         if p.get("is_exhausted"):
             until_ts = p.get("cooldown_until", 0)
             t_str = time.strftime('%H:%M', time.localtime(until_ts)) if until_ts else ""
             status = f"⏳ ЛИМИТ (до {t_str})"
+        elif is_verified:
+            status = "✔ FLOW СЕССИЯ"
         elif p["has_cookies"]:
-            status = "✔ ГОТОВ"
+            status = "✔ ГОТОВ К ВХОДУ"
         else:
             status = "⚠ НЕТ КУКОВ"
         print(f"{idx:<3} | {folder:<12} | {name:<20} | {email:<22} | {status}")

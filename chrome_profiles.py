@@ -446,3 +446,27 @@ def get_session_file(profile_folder: str) -> Path:
     """Возвращает путь к сохраненному файлу состояния сессии Playwright."""
     safe_name = profile_folder.replace(" ", "_").lower()
     return SESSIONS_DIR / f"session_{safe_name}.json"
+
+def verify_session(profile_folder: str) -> tuple[bool, Optional[str]]:
+    """Быстрая проверка сессии Google Flow через NextAuth session API."""
+    session_file = get_session_file(profile_folder)
+    if not session_file.exists():
+        return False, None
+    try:
+        data = json.loads(session_file.read_text(encoding="utf-8"))
+        cookies = {c["name"]: c["value"] for c in data.get("cookies", [])}
+        if not cookies or "__Secure-next-auth.session-token" not in cookies:
+            return False, None
+        import urllib.request
+        req = urllib.request.Request("https://labs.google/fx/api/auth/session")
+        req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+        cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+        req.add_header("Cookie", cookie_str)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp_data = json.loads(resp.read().decode())
+            if resp_data and resp_data.get("user"):
+                return True, resp_data.get("user", {}).get("email")
+            return False, None
+    except Exception:
+        return False, None
+

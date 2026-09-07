@@ -30,6 +30,19 @@ QUOTA_KEYWORDS = [
     "you have reached your limit", "limit reached", "try again later"
 ]
 
+STEALTH_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {
+    get: () => undefined
+});
+if (!window.chrome) {
+    window.chrome = {};
+}
+window.chrome.runtime = window.chrome.runtime || {
+    OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+    OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' }
+};
+"""
+
 async def check_ui_quota_limits(page) -> Optional[str]:
     """
     Проверяет элементы интерфейса Google Flow на наличие признаков исчерпания квоты или кредитов.
@@ -137,8 +150,15 @@ async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Def
         user_data_dir=str(profile_path),
         channel="chrome",
         headless=True,
-        args=["--disable-blink-features=AutomationControlled"]
+        chromium_sandbox=True,
+        ignore_default_args=["--enable-automation", "--no-sandbox"],
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
     )
+    await ctx.add_init_script(STEALTH_SCRIPT)
 
     if storage_state_arg:
         try:
@@ -160,14 +180,20 @@ async def ensure_flow_workspace(page):
 
     # Если находимся на лендинге /about
     if "flow.google.com/about" in page.url:
-        start_btn = page.locator("a:has-text('Создать'), a:has-text('Попробовать'), button:has-text('Создать'), button:has-text('Попробовать'), a:has-text('Try'), button:has-text('Try')").first
+        start_btn = page.locator(
+            "button:has-text('Создать'), button:has-text('Створити'), button:has-text('Try'), "
+            "button:has-text('Попробовать'), a:has-text('Создать'), a:has-text('Створити')"
+        ).first
         if await start_btn.count():
-            href = await start_btn.get_attribute("href")
-            if href and href.startswith("http"):
-                await page.goto(href, wait_until="domcontentloaded", timeout=30000)
-            else:
-                await start_btn.click()
-            await asyncio.sleep(5)
+            try:
+                href = await start_btn.get_attribute("href")
+                if href and href.startswith("http"):
+                    await page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                else:
+                    await start_btn.click()
+                await asyncio.sleep(4)
+            except Exception:
+                pass
 
     if "accounts.google.com" in page.url:
         print("\n[!] Внимание: Требуется разовая авторизация в Google Flow.")
