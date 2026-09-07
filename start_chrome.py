@@ -50,12 +50,14 @@ def main():
     print(" 🚀 ЗАПУСК GOOGLE CHROME С ПОДДЕРЖКОЙ АВТОМАТИЗАЦИИ (40+ АККАУНТОВ)")
     print("=" * 80)
 
+    user_data_path = chrome_profiles.get_chrome_user_data_path()
+
     # 1. Проверяем, не открыт ли уже Chrome с портом 9222
     if chrome_profiles.is_cdp_available(port=args.port):
         print(f"\n[✔] Google Chrome УЖЕ ЗАПУЩЕН с активным портом отладки {args.port}!")
-        print("Вы можете сразу генерировать видео и фото:")
-        print('  .\\generate.bat "A futuristic flying car over cyberpunk city"')
-        print('  .\\generate_image.bat "A cybernetic dragon in neon forest"\n')
+        print("Все ваши 40 аккаунтов уже подключены! Вы можете сразу генерировать:")
+        print('  .\\generate.bat "A futuristic flying car over cyberpunk city" --profile auto')
+        print('  .\\generate_image.bat "A cybernetic dragon in neon forest" --profile auto\n')
         return
 
     chrome_exe = chrome_profiles.find_chrome_executable()
@@ -64,56 +66,59 @@ def main():
         print("Убедитесь, что Google Chrome установлен на вашем компьютере.")
         return
 
-    # 2. Если Chrome запущен без порта отладки, предупреждаем
+    # 2. Если Chrome запущен без порта отладки, предупреждаем и перезапускаем
     if is_chrome_running():
-        print("\n[!] Внимание: Обнаружен запущенный Google Chrome (без порта отладки).")
-        print("Чтобы активировать отладку для ваших 40 аккаунтов, Chrome необходимо перезапустить.")
-        print("Закройте Chrome вручную или нажмите 'y' для автоматического перезапуска.")
-        
-        # Если запущено интерактивно, спрашиваем
-        if sys.stdin.isatty():
+        print("\n[!] Внимание: Google Chrome сейчас открыт в обычном режиме.")
+        print("    Чтобы подключить ваши 40 аккаунтов к генератору, Chrome нужно перезапустить с портом 9222.")
+        print("    (Все ваши вкладки, закладки и пароли в безопасности и сохраняются).\n")
+        if not args.yes:
             try:
-                ans = input("Закрыть Chrome и перезапустить с отладкой? (y/n) [по умолчанию y]: ").strip().lower()
+                input("Нажмите Enter для перезапуска Chrome (или закройте окно для отмены)... ")
             except Exception:
-                ans = "y"
-            if ans in ("", "y", "yes", "д", "да"):
-                print("[+] Завершение процессов Chrome...")
-                kill_chrome_processes()
-            else:
-                print("[-] Запуск отменен. Пожалуйста, закройте Chrome вручную и повторите запуск.")
-                return
-        else:
-            print("[+] Автоматический перезапуск Chrome с портом отладки...")
-            kill_chrome_processes()
+                pass
+        print("[+] Завершение старых процессов Chrome...")
+        kill_chrome_processes()
+        time.sleep(1.5)
 
-    # 3. Запуск Chrome с флагом --remote-debugging-port=9222
-    cmd = [str(chrome_exe), "--remote-debugging-port=9222"]
-    if len(sys.argv) > 1:
-        cmd.extend(sys.argv[1:])
+    # 3. Запуск Chrome с флагом --remote-debugging-port=9222 и явным user-data-dir
+    cmd = [
+        str(chrome_exe),
+        f"--remote-debugging-port={args.port}",
+        f"--user-data-dir={user_data_path}"
+    ]
 
-    print(f"\n[+] Запуск Chrome: {chrome_exe.name}...")
+    print(f"\n[+] Запуск Chrome с поддержкой 40 профилей...")
     subprocess.Popen(cmd)
 
-    # Ждем 2-3 секунды активации порта
-    print("Ожидание активации порта 9222...")
+    # Ждем активации порта
+    print("Ожидание активации порта автоматизации 9222...")
     port_active = False
-    for _ in range(10):
+    for _ in range(16):
         time.sleep(0.5)
-        if chrome_profiles.is_cdp_available(port=9222):
+        if chrome_profiles.is_cdp_available(port=args.port):
             port_active = True
             break
 
     if port_active:
-        print("\n[✔] Google Chrome УСПЕШНО ЗАПУЩЕН!")
-        print("    Порт отладки 127.0.0.1:9222 АКТИВЕН.")
-        print("    Все ваши 40 профилей, закладки и сессии доступны без повторного входа!\n")
-        print("💡 Теперь можно отдавать любые команды на генерацию:")
-        print('  .\\generate.bat "A futuristic flying car over cyberpunk city"')
-        print('  .\\generate.bat "Cyberpunk street in rain" --profile 2')
-        print('  .\\generate.bat "Nature drone shot" --profile auto  (ротация по всем 40 аккаунтам)')
-        print('  .\\generate_image.bat "A cybernetic dragon in neon forest"\n')
+        print("\n" + "=" * 80)
+        print(" [✔] ВСЁ ГОТОВО! GOOGLE CHROME УСПЕШНО ПОДКЛЮЧЕН К АВТОМАТИЗАЦИИ")
+        print("=" * 80)
+        print(f"    Порт отладки: 127.0.0.1:{args.port} АКТИВЕН.")
+        print("    Все ваши 40 аккаунтов доступны для генерации БЕЗ повторного ввода паролей!\n")
+        print("📌 ВАЖНО: Не закрывайте открывшееся окно Google Chrome.")
+        print("   Вы можете свернуть его или пользоваться им как обычно.\n")
+        print("🚀 Теперь запускайте генерацию:")
+        print('   .\\generate.bat "Ваш промпт" --profile auto')
+        print('   .\\generate_image.bat "Ваш промпт" --profile auto\n')
     else:
-        print("\n[!] Chrome запущен. Если порт 9222 не отвечает, убедитесь, что все старые окна Chrome были закрыты.\n")
+        print("\n" + "=" * 80)
+        print(" [!] ВНИМАНИЕ: Порт 9222 не открылся.")
+        print("=" * 80)
+        print(" Обычно это означает, что Chrome остался запущен в фоновом режиме (в трее около часов).")
+        print(" Что сделать:")
+        print(" 1. Закройте все окна Chrome и значок Chrome около часов (в трее).")
+        print(" 2. Запустите этот скрипт еще раз: .\\start_chrome_debug.bat")
+        print(" Или используйте прямой вход: .\\login.bat\n")
 
 if __name__ == "__main__":
     main()
