@@ -1,17 +1,29 @@
 {
   "manifest_version": 3,
-  "name": "Flow Auto Helper",
-  "version": "1.0",
-  "description": "1-клик помощник для копирования токена авторизации Google Flow",
+  "name": "Flow Auto Sync Helper",
+  "version": "1.1",
+  "description": "Автоматический захват и синхронизация токена авторизации Google Flow для flow_auto",
   "permissions": [
-    "cookies"
+    "cookies",
+    "tabs"
   ],
   "host_permissions": [
     "https://labs.google/*",
-    "https://flow.google.com/*"
+    "https://flow.google.com/*",
+    "http://127.0.0.1:9876/*"
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Скопировать токен Google Flow"
-  }
+    "default_title": "Flow Auto Sync"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://flow.google.com/*", "https://labs.google/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ]
 }
