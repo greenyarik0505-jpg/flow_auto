@@ -71,6 +71,10 @@ def generate_video(
                 if res_file and res_file.exists():
                     print(f"\n[✔] Видео успешно сгенерировано и сохранено: {res_file}")
                     return
+                else:
+                    print(f"[-] На профиле '{candidate}' не удалось получить видео за отведенное время.")
+                    attempted_profiles.add(candidate)
+                    continue
             except chrome_profiles.QuotaExceededError as qe:
                 print(f"\n[Auto-Rotation] ⚠️ На профиле '{qe.profile}' закончились кредиты/квота: {qe.reason}")
                 chrome_profiles.mark_profile_exhausted(qe.profile, qe.reason)

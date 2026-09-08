@@ -22,6 +22,25 @@ BASE_DIR = Path(__file__).parent.resolve()
 CACHE_PROFILES_DIR = BASE_DIR / ".flow_profiles"
 ROTATION_STATE_FILE = BASE_DIR / ".flow_rotation.json"
 LIMITS_FILE = BASE_DIR / ".flow_limits.json"
+SESSIONS_DIR = BASE_DIR / ".flow_sessions"
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_session_file(profile_folder: str) -> Path:
+    """Возвращает путь к сохраненному файлу состояния сессии Playwright."""
+    safe_name = profile_folder.replace(" ", "_").lower()
+    return SESSIONS_DIR / f"session_{safe_name}.json"
+
+def is_profile_flow_ready(profile_folder: str) -> bool:
+    """Проверяет, содержит ли сохраненная сессия рабочие куки авторизации Google Flow (OSID/SID)."""
+    session_file = get_session_file(profile_folder)
+    if not session_file.exists():
+        return False
+    try:
+        data = json.loads(session_file.read_text(encoding="utf-8"))
+        cookies = data.get("cookies", [])
+        return any("OSID" in c.get("name", "") or "SID" in c.get("name", "") for c in cookies)
+    except Exception:
+        return False
 
 class QuotaExceededError(Exception):
     """Исключение при исчерпании лимитов / кредитов / квоты аккаунта Google Flow."""
@@ -200,6 +219,7 @@ def get_all_chrome_profiles(user_data_dir: Optional[Path] = None) -> List[Dict[s
     exhausted_map = get_exhausted_profiles()
     for p in profiles:
         folder = p["folder"]
+        p["is_flow_ready"] = is_profile_flow_ready(folder)
         if folder in exhausted_map:
             p["is_exhausted"] = True
             p["cooldown_until"] = exhausted_map[folder].get("cooldown_until")
@@ -228,8 +248,11 @@ def resolve_profile_folder(
 
     if selector is None or str(selector).strip() == "":
         for p in profiles:
-            if p["folder"] == "Default" and p["has_cookies"] and not p.get("is_exhausted") and p["folder"] not in exclude_set:
+            if p["folder"] == "Default" and p.get("is_flow_ready") and not p.get("is_exhausted") and p["folder"] not in exclude_set:
                 return "Default"
+        for p in profiles:
+            if p.get("is_flow_ready") and not p.get("is_exhausted") and p["folder"] not in exclude_set:
+                return p["folder"]
         for p in profiles:
             if p["has_cookies"] and not p.get("is_exhausted") and p["folder"] not in exclude_set:
                 return p["folder"]
@@ -276,7 +299,8 @@ def get_next_rotated_profile(
 ) -> str:
     """
     Round-robin ротация среди доступных профилей.
-    Автоматически пропускает аккаунты, у которых исчерпан лимит (кулдаун) или которые переданы в exclude.
+    Автоматически пропускает аккаунты, у которых исчерпан лимит (кулдаун), которые переданы в exclude,
+    или которые еще не имеют активной сессии Google Flow.
     """
     if profiles is None:
         profiles = get_all_chrome_profiles(user_data_dir)
@@ -288,30 +312,29 @@ def get_next_rotated_profile(
     exhausted_map = get_exhausted_profiles()
     all_exhausted = set(exhausted_map.keys())
 
-    # 1. Приоритет: профили с куками, не исчерпанные и не в exclude
+    # 1. Высший приоритет: профили с ПОЛНОСТЬЮ авторизованной сессией Flow (is_flow_ready), не исчерпанные и не в exclude
     candidates = [
         p["folder"] for p in profiles 
-        if p.get("has_cookies") and p["folder"] not in exclude_set and p["folder"] not in all_exhausted
+        if p.get("is_flow_ready") and p["folder"] not in exclude_set and p["folder"] not in all_exhausted
     ]
 
-    # 2. Если все с куками исчерпаны, пробуем любые не исчерпанные и не в exclude
-    if not candidates:
+    # 2. Если все авторизованные профили в exclude (например, в рамках одной попытки), но есть другие авторизованные
+    if not candidates and not [p for p in profiles if p.get("is_flow_ready")]:
+        # Только если НЕТ ни одного с flow сессией, пробуем другие профили с куками
         candidates = [
             p["folder"] for p in profiles 
-            if p["folder"] not in exclude_set and p["folder"] not in all_exhausted
+            if p.get("has_cookies") and p["folder"] not in exclude_set and p["folder"] not in all_exhausted
         ]
 
-    # 3. Если ВСЕ профили исчерпаны, но есть не опробованные в текущем запуске (exclude_set)
-    if not candidates and exclude_set:
-        candidates = [
-            p["folder"] for p in profiles 
-            if p["folder"] not in exclude_set
-        ]
-
-    # 4. Если вообще всё исключено или исчерпано, возвращаем хотя бы один рабочий
+    # 3. Если все кандидаты исключены
     if not candidates:
-        active = [p["folder"] for p in profiles if p.get("has_cookies")]
-        return active[0] if active else profiles[0]["folder"]
+        ready = [p["folder"] for p in profiles if p.get("is_flow_ready") and p["folder"] not in exclude_set]
+        if ready:
+            return ready[0]
+        ready_any = [p["folder"] for p in profiles if p.get("is_flow_ready")]
+        if ready_any:
+            return ready_any[0]
+        return "Default"
 
     last_index = -1
     if ROTATION_STATE_FILE.exists():
@@ -398,11 +421,6 @@ def find_chrome_executable() -> Optional[Path]:
         if c.exists():
             return c
     return None
-
-def get_session_file(profile_folder: str) -> Path:
-    """Возвращает путь к сохраненному файлу состояния сессии Playwright."""
-    safe_name = profile_folder.replace(" ", "_").lower()
-    return SESSIONS_DIR / f"session_{safe_name}.json"
 
 def verify_session(profile_folder: str) -> tuple[bool, Optional[str]]:
     """Быстрая проверка сессии Google Flow через NextAuth session API."""

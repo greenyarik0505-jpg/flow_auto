@@ -81,6 +81,10 @@ def generate_image(
                 if res_files:
                     print(f"\n[✔] Изображения успешно сохранены ({len(res_files)} шт.) в: {out_dir}")
                     return
+                else:
+                    print(f"[-] На профиле '{candidate}' не удалось получить изображение за отведенное время.")
+                    attempted_profiles.add(candidate)
+                    continue
             except chrome_profiles.QuotaExceededError as qe:
                 print(f"\n[Auto-Rotation] ⚠️ На профиле '{qe.profile}' закончились кредиты/квота: {qe.reason}")
                 chrome_profiles.mark_profile_exhausted(qe.profile, qe.reason)

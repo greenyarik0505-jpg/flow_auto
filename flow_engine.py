@@ -123,46 +123,50 @@ def get_automation_profile(
 
 async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Default"):
     """
-    Запускает изолированный фоновый контекст браузера Playwright:
-    1. Если есть файл сессии .flow_sessions/ — загружает куки сессии.
-    2. Запускает persistent context без конфликтов с Chrome.
+    Запускает изолированный контекст Chromium Playwright.
+    Загружает сессию из .flow_sessions/ без блокировки дисковых профилей Chrome (ProcessSingleton).
     """
     session_file = chrome_profiles.get_session_file(profile_folder)
     storage_state_arg = str(session_file) if session_file.exists() else None
 
     if storage_state_arg:
-        print(f"    [Сессия] Загрузка сохраненной сессии: {session_file.name}")
+        print(f"    [Сессия] Загрузка сохраненной сессии: {session_file.name}", flush=True)
 
-    ctx = await pw.chromium.launch_persistent_context(
-        user_data_dir=str(profile_path),
-        channel="chrome",
+    print("    [Браузер] Запуск изолированного контекста Chromium...", flush=True)
+    browser = await pw.chromium.launch(
         headless=True,
-        chromium_sandbox=True,
-        ignore_default_args=["--enable-automation", "--no-sandbox"],
         args=[
+            "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
+            "--disable-dev-shm-usage",
         ]
+    )
+    ctx = await browser.new_context(
+        storage_state=storage_state_arg,
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        viewport={"width": 1920, "height": 1080},
     )
     await ctx.add_init_script(STEALTH_SCRIPT)
 
-    if storage_state_arg:
+    # При закрытии контекста закрываем и сам инстанс браузера
+    orig_close = ctx.close
+    async def close_all():
         try:
-            import json
-            state_data = json.loads(session_file.read_text(encoding="utf-8"))
-            if "cookies" in state_data:
-                await ctx.add_cookies(state_data["cookies"])
-        except Exception:
-            pass
+            await orig_close()
+        finally:
+            await browser.close()
+    ctx.close = close_all
 
-    page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+    page = await ctx.new_page()
     return ctx, page
 
 async def ensure_flow_workspace(page):
     """Обеспечивает переход в рабочую область проекта Google Flow."""
+    print("    [Flow] Подключение к flow.google.com...", flush=True)
     if "flow.google.com" not in page.url:
         await page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
-        await asyncio.sleep(4)
+        await asyncio.sleep(2)
 
     # Закрытие стартовых баннеров/модалок если есть
     for _ in range(2):
@@ -179,18 +183,20 @@ async def ensure_flow_workspace(page):
                 pass
 
     if "flow.google.com/about" in page.url or "accounts.google.com" in page.url:
-        print("\n[!] Внимание: Требуется разовая авторизация в Google Flow.")
-        print("💡 Для входа в ваши аккаунты запустите:")
-        print("   .\\login.bat               (для первого аккаунта)")
-        print("   .\\login.bat 2             (для второго аккаунта)")
-        print("   .\\login.bat --all         (для всех аккаунтов по очереди)\n")
+        print("\n[!] Внимание: Требуется разовая авторизация в Google Flow.", flush=True)
+        print("💡 Для входа в ваши аккаунты запустите:", flush=True)
+        print("   .\\login.bat               (для первого аккаунта)", flush=True)
+        print("   .\\login.bat 2             (для второго аккаунта)", flush=True)
+        print("   .\\login.bat --all         (для всех аккаунтов по очереди)\n", flush=True)
         raise RuntimeError("Требуется авторизация в Google Flow. Запустите .\\login.bat")
 
     # Если уже на странице проекта и виден инпут
-    composer = page.locator("div.ProseMirror[contenteditable='true'], [contenteditable='true']").first
+    composer = page.locator("div.ProseMirror, [contenteditable='true'], [role='textbox']").first
     if await composer.count():
+        print("    [Flow] Проект уже открыт и готов к работе.", flush=True)
         return
 
+    print("    [Flow] Переход в проект...", flush=True)
     # Переход в проект из списка проектов
     prj = page.locator("a[href*='/project/']").first
     if await prj.count():
@@ -199,22 +205,24 @@ async def ensure_flow_workspace(page):
         if clean_href:
             target_url = clean_href if clean_href.startswith("http") else f"https://flow.google.com{clean_href}"
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
     else:
         # Если проектов еще нет — нажимаем кнопку создания нового проекта
         new_prj = page.locator("button:has-text('Новий проєкт'), button:has-text('New project'), button:has-text('Start Creating')").first
         if await new_prj.count():
             await new_prj.click()
-            await asyncio.sleep(5)
+            await asyncio.sleep(4)
 
     # Закрываем приветственное модальное окно внутри проекта ("Faster loading...", "Почати")
     modal_btn = page.locator("button:has-text('Почати'), button:has-text('Start'), button:has-text('Зрозуміло'), button:has-text('Got it')").first
     if await modal_btn.count():
         try:
             await modal_btn.click()
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         except Exception:
             pass
+
+    print("    [Flow] Рабочая область проекта успешно загружена.", flush=True)
 
 async def generate_image_auto(
     prompt: str,
@@ -228,21 +236,29 @@ async def generate_image_auto(
     out_dir.mkdir(parents=True, exist_ok=True)
     profile_path, profile_display_name, profile_folder = get_automation_profile(profile, exclude=exclude)
     
-    print(f"\n[+] Автоматическая генерация фото через Google Flow...")
-    print(f"    Промпт : {prompt}")
-    print(f"    Профиль: {profile_display_name}")
-    print(f"    Папка  : {out_dir}\n")
+    print(f"\n[+] Автоматическая генерация фото через Google Flow...", flush=True)
+    print(f"    Промпт : {prompt}", flush=True)
+    print(f"    Профиль: {profile_display_name}", flush=True)
+    print(f"    Папка  : {out_dir}\n", flush=True)
 
     saved_files: list[Path] = []
     quota_state = {"exhausted": False, "reason": ""}
+    captured_from_net: list[tuple[str, bytes]] = []
 
     async with async_playwright() as pw:
         context, page = await get_browser_context(pw, profile_path, profile_folder)
 
-        def on_response(resp):
+        async def on_response(resp):
             if resp.status == 429:
                 quota_state["exhausted"] = True
                 quota_state["reason"] = f"HTTP 429 Too Many Requests (Превышен лимит запросов Flow)"
+            elif resp.status == 200 and any(k in resp.url for k in ["flow-content.google/image", "flow.google.com/asb"]):
+                try:
+                    body = await resp.body()
+                    if len(body) > 20000:
+                        captured_from_net.append((resp.url, body))
+                except Exception:
+                    pass
 
         page.on("response", on_response)
 
@@ -256,20 +272,41 @@ async def generate_image_auto(
                 chrome_profiles.mark_profile_exhausted(profile_folder, reason)
                 raise chrome_profiles.QuotaExceededError(profile_folder, reason)
 
-            composer = page.locator("div.ProseMirror[contenteditable='true'], [contenteditable='true']").first
-            if not await composer.count():
-                await asyncio.sleep(3)
-                composer = page.locator("div.ProseMirror[contenteditable='true'], [contenteditable='true']").first
+            composer = page.locator("div.ProseMirror, [contenteditable='true'], [role='textbox']").first
+            try:
+                await composer.wait_for(state="visible", timeout=15000)
+            except Exception:
+                await asyncio.sleep(2)
+                composer = page.locator("div.ProseMirror, [contenteditable='true'], [role='textbox']").first
 
+            # Сбрасываем перехваченные картинки, загруженные при открытии страницы проекта
+            captured_from_net.clear()
+
+            print(f"    [Flow] Ввод промпта...", flush=True)
             await composer.click()
-            await composer.fill(prompt)
+            await asyncio.sleep(0.5)
+            try:
+                await composer.fill(prompt)
+            except Exception:
+                await page.keyboard.type(prompt)
             await asyncio.sleep(1)
+
+            # Запоминаем текущие картинки до отправки запроса
+            initial_srcs = await page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('img'))
+                    .filter(i => i.src && (i.src.includes('flow-content.google') || i.src.includes('/asb/')))
+                    .map(i => i.src);
+            }""")
+            initial_set = set(initial_srcs)
 
             submit_btn = page.locator(
                 "button[aria-label*='Почати створення'], button[aria-label*='Start creating'], "
-                "button[aria-label*='Generate'], button[aria-label*='Створити'], "
+                "button[aria-label*='Start generation'], button[aria-label*='Generate'], button[aria-label*='Створити'], "
                 "button:has-text('arrow_forward'), button.generate-icon-button, button[type='submit']"
             ).first
+
+            # Очищаем буфер сетевого перехвата строго перед запуском отправки
+            captured_from_net.clear()
 
             if await submit_btn.count():
                 classes = await submit_btn.get_attribute("class") or ""
@@ -278,8 +315,10 @@ async def generate_image_auto(
                     quota_err = await check_ui_quota_limits(page) or "Кнопка генерации отключена (0 кредитов)"
                     chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
                     raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
+                print("    [Flow] Отправка запроса...", flush=True)
                 await submit_btn.click()
             else:
+                print("    [Flow] Отправка запроса по клавише Enter...", flush=True)
                 await composer.press("Enter")
 
             await asyncio.sleep(2)
@@ -289,16 +328,13 @@ async def generate_image_auto(
                 chrome_profiles.mark_profile_exhausted(profile_folder, reason)
                 raise chrome_profiles.QuotaExceededError(profile_folder, reason)
 
-            print("[+] Запрос отправлен в Flow Agent, ожидание рендера...")
-            
-            # Отслеживаем появление сгенерированных изображений
-            initial_srcs = set()
-            for img_el in await page.locator("img[src*='/asb/'], img[src*='googleusercontent']").all():
-                s = await img_el.get_attribute("src")
-                if s: initial_srcs.add(s)
+            print("[+] Запрос принят Google Flow! Ожидание рендеринга Imagen 4...", flush=True)
 
-            for i in range(25):
+            for i in range(35):
                 await asyncio.sleep(3)
+                elapsed = (i + 1) * 3
+                print(f"    ⏳ Рендеринг изображения... ({elapsed}с)", flush=True)
+
                 if quota_state["exhausted"]:
                     chrome_profiles.mark_profile_exhausted(profile_folder, quota_state["reason"])
                     raise chrome_profiles.QuotaExceededError(profile_folder, quota_state["reason"])
@@ -307,28 +343,94 @@ async def generate_image_auto(
                     chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
                     raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
 
-                all_imgs = await page.locator("img[src*='/asb/'], img[src*='googleusercontent']").all()
-                new_imgs = []
-                for img_el in all_imgs:
-                    s = await img_el.get_attribute("src")
-                    if s and s not in initial_srcs and not "googleusercontent.com/a/" in s:
-                        new_imgs.append(s)
-
-                if new_imgs:
-                    print(f"[✔] Найдено {len(new_imgs)} новых изображений!")
-                    for idx, src in enumerate(new_imgs[:count]):
-                        try:
-                            resp = await page.request.get(src)
-                            if resp.status == 200:
-                                raw = await resp.body()
-                                timestamp = int(time.time())
-                                fn = out_dir / f"image_{timestamp}_{idx+1}.png"
-                                fn.write_bytes(raw)
-                                saved_files.append(fn)
-                                print(f"    [✔] Сохранено: {fn.name} ({len(raw)} байт)")
-                        except Exception as e:
-                            print(f"    [!] Ошибка скачивания {src[:50]}: {e}")
+                # Способ 1: Прямой перехват из сетевого потока Google Flow
+                new_net_images = [(u, b) for (u, b) in captured_from_net if u not in initial_set]
+                if new_net_images:
+                    await asyncio.sleep(1) # даем завершиться параллельным чанкам пакета
+                    print(f"\n[✔] Рендеринг завершен! Перехвачено {len(new_net_images)} изображений из потока...", flush=True)
+                    for idx, (img_url, raw) in enumerate(new_net_images[:count]):
+                        ext = ".png"
+                        if raw[:4] == b"RIFF" and b"WEBP" in raw[:12]:
+                            ext = ".webp"
+                        elif raw[:3] == b"\xff\xd8\xff":
+                            ext = ".jpg"
+                        timestamp = int(time.time())
+                        fn = out_dir / f"image_{timestamp}_{idx+1}{ext}"
+                        fn.write_bytes(raw)
+                        saved_files.append(fn)
+                        print(f"    [✔] Сохранено: {fn.name} ({len(raw)} байт)", flush=True)
                     break
+
+                # Способ 2: Захват из DOM (Canvas / Fetch fallback)
+                new_items = await page.evaluate("""async (initialList) => {
+                    const initialSet = new Set(initialList);
+                    const imgs = Array.from(document.querySelectorAll('img'))
+                        .filter(i => i.complete && i.naturalWidth > 200 && i.src && 
+                                     (i.src.includes('flow-content.google') || i.src.includes('/asb/')) && 
+                                     !initialSet.has(i.src));
+                    
+                    const results = [];
+                    for (const img of imgs) {
+                        let dataUrl = null;
+                        // 1. Попытка экспорта через Canvas (несжатый PNG в полном разрешении)
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = img.naturalWidth;
+                            canvas.height = img.naturalHeight;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(img, 0, 0);
+                            dataUrl = canvas.toDataURL('image/png');
+                        } catch (e) {}
+
+                        // 2. Fallback: нативный fetch из контекста страницы
+                        if (!dataUrl) {
+                            try {
+                                const resp = await fetch(img.src, { credentials: 'include' });
+                                if (resp.ok) {
+                                    const blob = await resp.blob();
+                                    const reader = new FileReader();
+                                    dataUrl = await new Promise((resolve) => {
+                                        reader.onloadend = () => resolve(reader.result);
+                                        reader.readAsDataURL(blob);
+                                    });
+                                }
+                            } catch (e) {}
+                        }
+
+                        if (dataUrl) {
+                            results.push({
+                                src: img.src,
+                                width: img.naturalWidth,
+                                height: img.naturalHeight,
+                                dataUrl: dataUrl
+                            });
+                        }
+                    }
+                    return results;
+                }""", list(initial_set))
+
+                if new_items:
+                    print(f"\n[✔] Рендеринг завершен! Экспорт {len(new_items)} сгенерированных изображений из DOM...", flush=True)
+                    for idx, item in enumerate(new_items[:count]):
+                        try:
+                            raw = base64.b64decode(item["dataUrl"].split(",", 1)[1])
+                            timestamp = int(time.time())
+                            ext = ".png"
+                            if raw[:4] == b"RIFF" and b"WEBP" in raw[:12]:
+                                ext = ".webp"
+                            elif raw[:3] == b"\xff\xd8\xff":
+                                ext = ".jpg"
+
+                            fn = out_dir / f"image_{timestamp}_{idx+1}{ext}"
+                            fn.write_bytes(raw)
+                            saved_files.append(fn)
+                            print(f"    [✔] Сохранено: {fn.name} ({len(raw)} байт, {item['width']}x{item['height']})", flush=True)
+                        except Exception as e:
+                            print(f"    [!] Ошибка экспорта изображения {idx+1}: {e}", flush=True)
+                    break
+
+            if not saved_files:
+                print("\n[!] Изображение не появилось в ответе за отведенное время.", flush=True)
 
         finally:
             await context.close()
@@ -347,10 +449,10 @@ async def generate_video_auto(
     out_dir.mkdir(parents=True, exist_ok=True)
     profile_path, profile_display_name, profile_folder = get_automation_profile(profile, exclude=exclude)
 
-    print(f"\n[+] Автоматическая генерация видео через Google Flow (Omni / Veo)...")
-    print(f"    Промпт : {prompt}")
-    print(f"    Профиль: {profile_display_name}")
-    print(f"    Папка  : {out_dir}\n")
+    print(f"\n[+] Автоматическая генерация видео через Google Flow (Omni / Veo)...", flush=True)
+    print(f"    Промпт : {prompt}", flush=True)
+    print(f"    Профиль: {profile_display_name}", flush=True)
+    print(f"    Папка  : {out_dir}\n", flush=True)
 
     out_file: Optional[Path] = None
     quota_state = {"exhausted": False, "reason": ""}
@@ -375,51 +477,49 @@ async def generate_video_auto(
                 chrome_profiles.mark_profile_exhausted(profile_folder, reason)
                 raise chrome_profiles.QuotaExceededError(profile_folder, reason)
 
-            add_btn = page.locator("button:has(mat-icon:has-text('add'))").first
-            if await add_btn.count():
-                await add_btn.click()
-                await asyncio.sleep(1)
-                scene_item = page.locator("[role='menuitem']").filter(has_text="Нова сцена").first
-                if await scene_item.count():
-                    await scene_item.click()
-                    await asyncio.sleep(3)
+            composer = page.locator("div.ProseMirror, [contenteditable='true'], [role='textbox']").first
+            try:
+                await composer.wait_for(state="visible", timeout=15000)
+            except Exception:
+                await asyncio.sleep(2)
+                composer = page.locator("div.ProseMirror, [contenteditable='true'], [role='textbox']").first
 
-            clip = page.locator(".timeline-item, .clip-container, .timeline-clip").first
-            if not await clip.count():
-                plus_btn = page.locator("button.add-clip-button, button:has(mat-icon:has-text('add_2'))").first
-                if await plus_btn.count():
-                    await plus_btn.click()
-                    await asyncio.sleep(1)
-                    asset_card = page.locator(".cdk-overlay-pane button, .cdk-overlay-pane mat-list-item").first
-                    if await asset_card.count():
-                        await asset_card.click()
-                        await asyncio.sleep(2)
+            print(f"    [Flow] Ввод промпта для видео...", flush=True)
+            await composer.click()
+            await asyncio.sleep(0.5)
+            video_prompt = f"/video {prompt}" if not prompt.startswith("/") else prompt
+            try:
+                await composer.fill(video_prompt)
+            except Exception:
+                await page.keyboard.type(video_prompt)
+            await asyncio.sleep(1)
 
-            composer = page.locator("[contenteditable='true']").first
-            if await composer.count():
-                await composer.click()
-                await composer.fill(prompt)
-                await asyncio.sleep(1)
-                submit_btn = page.locator("button.generate-icon-button, button:has(mat-icon:has-text('arrow_forward'))").last
-                if await submit_btn.count():
-                    classes = await submit_btn.get_attribute("class") or ""
-                    disabled = await submit_btn.get_attribute("disabled")
-                    if "mat-button-disabled" in classes or disabled is not None:
-                        quota_err = await check_ui_quota_limits(page) or "Кнопка генерации отключена (0 кредитов)"
-                        chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
-                        raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
-                    await submit_btn.click()
-                    print("[+] Запрос на генерацию видео отправлен. Рендеринг клипа...")
+            submit_btn = page.locator(
+                "button[aria-label*='Почати створення'], button[aria-label*='Start creating'], "
+                "button[aria-label*='Start generation'], button[aria-label*='Generate'], button[aria-label*='Створити'], "
+                "button:has-text('arrow_forward'), button.generate-icon-button, button[type='submit']"
+            ).first
 
-            await asyncio.sleep(2)
-            quota_err = await check_ui_quota_limits(page)
-            if quota_err or quota_state["exhausted"]:
-                reason = quota_err or quota_state["reason"]
-                chrome_profiles.mark_profile_exhausted(profile_folder, reason)
-                raise chrome_profiles.QuotaExceededError(profile_folder, reason)
+            if await submit_btn.count():
+                classes = await submit_btn.get_attribute("class") or ""
+                disabled = await submit_btn.get_attribute("disabled")
+                if "mat-button-disabled" in classes or disabled is not None:
+                    quota_err = await check_ui_quota_limits(page) or "Кнопка генерации отключена (0 кредитов)"
+                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
+                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
+                print("    [Flow] Отправка запроса...", flush=True)
+                await submit_btn.click()
+            else:
+                print("    [Flow] Отправка запроса по клавише Enter...", flush=True)
+                await composer.press("Enter")
 
-            for _ in range(24):
+            print("[+] Запрос принят Google Flow! Ожидание генерации клипа (Gemini Omni / Veo)...", flush=True)
+
+            for i in range(25):
                 await asyncio.sleep(5)
+                elapsed = (i + 1) * 5
+                print(f"    ⏳ Рендеринг видео клипа... ({elapsed}с)", flush=True)
+
                 if quota_state["exhausted"]:
                     chrome_profiles.mark_profile_exhausted(profile_folder, quota_state["reason"])
                     raise chrome_profiles.QuotaExceededError(profile_folder, quota_state["reason"])
@@ -432,7 +532,7 @@ async def generate_video_auto(
                 if await dl_btn.count():
                     classes = await dl_btn.get_attribute("class") or ""
                     if "disabled" not in classes:
-                        print("[✔] Рендеринг завершен! Экспорт и скачивание .mp4...")
+                        print("\n[✔] Рендеринг завершен! Экспорт и скачивание .mp4...", flush=True)
                         timestamp = int(time.time())
                         target_mp4 = out_dir / f"video_{timestamp}.mp4"
                         try:
@@ -440,12 +540,15 @@ async def generate_video_auto(
                                 await dl_btn.click()
                             dl = await dl_info.value
                             await dl.save_as(str(target_mp4))
-                            print(f"[✔] Видео успешно скачано: {target_mp4.name} ({target_mp4.stat().st_size} байт)")
+                            print(f"[✔] Видео успешно скачано: {target_mp4.name} ({target_mp4.stat().st_size} байт)", flush=True)
                             out_file = target_mp4
                             break
-                        except Exception:
-                            pass
+                        except Exception as dl_err:
+                            print(f"[-] Ошибка при скачивании файла: {dl_err}", flush=True)
                         break
+
+            if not out_file:
+                print("\n[!] Видео не было готово за отведенное время.", flush=True)
 
         finally:
             await context.close()
