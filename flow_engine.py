@@ -160,11 +160,11 @@ async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Def
 
 async def ensure_flow_workspace(page):
     """Обеспечивает переход в рабочую область проекта Google Flow."""
-    if "flow.google.com" not in page.url:
-        await page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=45000)
+    if "flow.google.com" not in page.url and "labs.google" not in page.url:
+        await page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=45000)
         await asyncio.sleep(4)
 
-    # Если находимся на лендинге /about
+    # Если находимся на лендинге /about, переходим непосредственно в инструменты Flow
     if "flow.google.com/about" in page.url:
         start_btn = page.locator(
             "button:has-text('Создать'), button:has-text('Створити'), button:has-text('Try'), "
@@ -180,6 +180,9 @@ async def ensure_flow_workspace(page):
                 await asyncio.sleep(4)
             except Exception:
                 pass
+        else:
+            await page.goto("https://labs.google/fx/tools/flow", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(4)
 
     if "accounts.google.com" in page.url:
         print("\n[!] Внимание: Требуется разовая авторизация в Google Flow.")
