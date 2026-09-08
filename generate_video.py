@@ -16,17 +16,7 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 
 BASE_DIR = Path(__file__).parent.resolve()
 VENV_GFLOW = BASE_DIR / ".venv" / "Scripts" / "gflow.exe"
-OUTPUT_DIR = BASE_DIR / "output"
-
-def get_gflow_bin() -> str:
-    if VENV_GFLOW.exists():
-        return str(VENV_GFLOW)
-    return "gflow"
-
-def check_auth() -> bool:
-    cmd = [get_gflow_bin(), "auth", "status"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return result.returncode == 0
+OUTPUT_DIR = BASE_DIR / "output" / "videos"
 
 import chrome_profiles
 
@@ -41,8 +31,10 @@ def generate_video(
     out_dir = out_dir or OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    profile = profile or "auto"
+
     # Режим автоматической ротации при исчерпании лимитов
-    if profile and profile.lower() in ("auto", "rotate", "next"):
+    if profile.lower() in ("auto", "rotate", "next"):
         all_profiles = chrome_profiles.get_all_chrome_profiles()
         max_attempts = max(len(all_profiles), 1)
         attempted_profiles: set[str] = set()
@@ -92,51 +84,7 @@ def generate_video(
 
         print("\n[-] Не удалось завершить генерацию видео ни на одном из доступных аккаунтов.")
         sys.exit(1)
-
-    cmd = [
-        get_gflow_bin(),
-        "video",
-        "t2v",
-        prompt,
-        "--model", model,
-        "--aspect", aspect,
-        "--out-dir", str(out_dir),
-    ]
-
-    if duration:
-        cmd.extend(["--duration", str(duration)])
-    if profile:
-        cmd.extend(["--profile", profile] )
-
-    print(f"\n[+] Запуск генерации видео...")
-    print(f"    Промпт : {prompt}")
-    print(f"    Модель : {model}")
-    print(f"    Формат : {aspect}")
-    if duration:
-        print(f"    Длительность: {duration}с")
-    print(f"    Папка  : {out_dir}\n")
-
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace"
-    )
-
-    output_lines = []
-    while True:
-        line = process.stdout.readline()
-        if not line and process.poll() is not None:
-            break
-        if line:
-            print(line, end="")
-            output_lines.append(line)
-
-    ret = process.poll()
-    if ret != 0:
-        print(f"\n[*] Переключение на прямой режим автоматизации Google Flow...")
+    else:
         try:
             import asyncio
             from flow_engine import generate_video_auto
@@ -159,15 +107,8 @@ def generate_video(
             print(f'   Пример: .\\generate.bat "{prompt}" --profile auto\n')
             sys.exit(1)
         except Exception as exc:
-            print(f"[-] Ошибка прямого режима: {exc}")
-
-        print(f"\n[-] Ошибка генерации (код {ret}).")
-        if not check_auth():
-            print("\n[!] Похоже, сессия не авторизована или истекла.")
-            print("    Выполните вход: python login.py или .\\login.bat\n")
-        sys.exit(ret)
-    else:
-        print(f"\n[✔] Видео успешно сгенерировано в: {out_dir}")
+            print(f"[-] Ошибка генерации: {exc}")
+            sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description="Google Flow (Veo / Gemini Omni) Video Generator")
@@ -229,10 +170,22 @@ def main():
         return
 
     if not args.prompt:
-        parser.print_help()
-        print("\n[!] Ошибка: Укажите текстовый промпт в кавычках.")
-        print('    Пример: .\\generate.bat "A cute robot waving hello" --profile auto')
-        sys.exit(1)
+        try:
+            print("\n" + "=" * 65)
+            print(" 🎬 GOOGLE FLOW STUDIO — ГЕНЕРАТОР ВИДЕО (VEO / OMNI)")
+            print("=" * 65)
+            print(" Режим: Автоматическая ротация по всем профилям Chrome")
+            print(" Подсказка: Вы также можете передавать параметры в консоли:")
+            print('   .\\generate.bat "Ваш промпт" --profile auto')
+            print("=" * 65)
+            user_input = input("\n[?] Введите текстовый промпт для генерации видео: ").strip()
+            if not user_input:
+                print("\n[!] Ошибка: Промпт не может быть пустым.")
+                sys.exit(1)
+            args.prompt = user_input
+        except (KeyboardInterrupt, EOFError):
+            print("\nОперация отменена.")
+            sys.exit(0)
 
     out_dir = Path(args.out_dir) if args.out_dir else None
 

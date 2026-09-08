@@ -133,6 +133,8 @@
 ## 🎥 1. Генерация Видео через Терминал (CLI)
 
 ### Простой запуск:
+* **Двойным кликом мыши**: просто дважды кликните по `generate.bat` или `generate_video.bat` — откроется окно, запросит текстовый промпт и выполнит генерацию (окно не закроется автоматически!).
+* **Через терминал с промптом:**
 ```powershell
 .\generate.bat "A futuristic flying car over neon cyberpunk city at night, rain reflections, 4k cinematic" --profile auto
 ```
@@ -163,6 +165,8 @@
 Генерация изображений в Google Flow работает через модель **Imagen 4** и занимает всего **10–20 секунд** (и не расходует кредиты Veo!).
 
 ### Простой запуск:
+* **Двойным кликом мыши**: запустите `generate_image.bat` двойным кликом — окно запросит промпт для картинки, создаст изображение и будет ждать нажатия клавиши.
+* **Через терминал с промптом:**
 ```powershell
 .\generate_image.bat "A cute red panda wearing a tiny astronaut suit on Mars, highly detailed, photorealistic" --profile auto
 ```

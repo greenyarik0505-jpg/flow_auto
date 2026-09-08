@@ -5,3 +5,9 @@ set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
 cd /d "%~dp0"
 ".venv\Scripts\python.exe" generate_image.py %*
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo [!] Процесс завершился с кодом: %ERRORLEVEL%
+)
+echo.
+pause
