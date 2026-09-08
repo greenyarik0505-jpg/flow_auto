@@ -30,13 +30,7 @@ def is_chrome_running() -> bool:
     except Exception:
         return False
 
-def kill_chrome_processes():
-    """Безопасно завершает процессы chrome.exe."""
-    try:
-        subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True)
-        time.sleep(1)
-    except Exception:
-        pass
+
 
 import argparse
 
@@ -66,19 +60,9 @@ def main():
         print("Убедитесь, что Google Chrome установлен на вашем компьютере.")
         return
 
-    # 2. Если Chrome запущен без порта отладки, предупреждаем и перезапускаем
+    # 2. Не закрываем и не сбрасываем запущенный Chrome пользователя!
     if is_chrome_running():
-        print("\n[!] Внимание: Google Chrome сейчас открыт в обычном режиме.")
-        print("    Чтобы подключить ваши 40 аккаунтов к генератору, Chrome нужно перезапустить с портом 9222.")
-        print("    (Все ваши вкладки, закладки и пароли в безопасности и сохраняются).\n")
-        if not args.yes:
-            try:
-                input("Нажмите Enter для перезапуска Chrome (или закройте окно для отмены)... ")
-            except Exception:
-                pass
-        print("[+] Завершение старых процессов Chrome...")
-        kill_chrome_processes()
-        time.sleep(1.5)
+        print("\n[i] Google Chrome запущен. Мы не закрываем ваши вкладки и окна.")
 
     # 3. Запуск Chrome с флагом --remote-debugging-port=9222 и явным user-data-dir
     cmd = [

@@ -153,7 +153,6 @@ async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Def
         chromium_sandbox=True,
         ignore_default_args=["--enable-automation", "--no-sandbox"],
         args=[
-            "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
         ]

@@ -356,52 +356,18 @@ def sync_chrome_profile_for_automation(
     dest_profile = dest_dir / "Default"
     dest_profile.mkdir(parents=True, exist_ok=True)
 
-    # 1. Local State
-    src_local_state = user_data_dir / "Local State"
-    dest_local_state = dest_dir / "Local State"
-    if src_local_state.exists():
+    # Если профиль автоматизации уже инициализирован, не перезаписываем его файлы
+    if (dest_profile / "Preferences").exists() and not force_sync:
+        return dest_dir
+
+    # Копируем только базовые настройки Preferences без блокировки баз данных
+    src_pref = src_profile / "Preferences"
+    dest_pref = dest_profile / "Preferences"
+    if src_pref.exists() and not dest_pref.exists():
         try:
-            if not dest_local_state.exists() or src_local_state.stat().st_mtime > dest_local_state.stat().st_mtime or force_sync:
-                shutil.copy2(src_local_state, dest_local_state)
+            shutil.copy2(src_pref, dest_pref)
         except Exception:
             pass
-
-    # 2. Файлы сессий
-    session_files = ["Preferences", "Secure Preferences", "Web Data", "Login Data"]
-    for fname in session_files:
-        src_f = src_profile / fname
-        dest_f = dest_profile / fname
-        if src_f.exists():
-            try:
-                if not dest_f.exists() or src_f.stat().st_mtime > dest_f.stat().st_mtime or force_sync:
-                    shutil.copy2(src_f, dest_f)
-            except Exception:
-                pass
-
-    # 3. Cookies
-    src_net = src_profile / "Network"
-    dest_net = dest_profile / "Network"
-    if src_net.exists():
-        dest_net.mkdir(parents=True, exist_ok=True)
-        for net_f in src_net.glob("*"):
-            if net_f.is_file():
-                try:
-                    df = dest_net / net_f.name
-                    if not df.exists() or net_f.stat().st_mtime > df.stat().st_mtime or force_sync:
-                        shutil.copy2(net_f, df)
-                except Exception:
-                    pass
-
-    # 4. Local Storage, IndexedDB, Session Storage
-    storage_dirs = ["Local Storage", "Session Storage", "IndexedDB"]
-    for sdir in storage_dirs:
-        src_s = src_profile / sdir
-        dest_s = dest_profile / sdir
-        if src_s.exists():
-            try:
-                shutil.copytree(src_s, dest_s, dirs_exist_ok=True)
-            except Exception:
-                pass
 
     return dest_dir
 
