@@ -1,11 +1,10 @@
 """
-Утилита для просмотра и проверки профилей Google Chrome.
-Позволяет увидеть все доступные аккаунты для Google Flow (40+ профилей)
-и узнать, как запускать генерацию с конкретного аккаунта.
+Утилита для просмотра и проверки профилей Google Flow (1..34+ аккаунтов).
+Показывает статус каждого профиля (авторизован / исчерпан лимит / требует входа).
 """
 import sys
+import time
 from pathlib import Path
-import chrome_profiles
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -14,54 +13,54 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+BASE_DIR = Path(__file__).parent.resolve()
+sys.path.insert(0, str(BASE_DIR))
+import gflow_backend
+
 def main():
     print("=" * 80)
-    print(" 🚀 GOOGLE FLOW: ПРОФИЛИ GOOGLE CHROME (ZERO-LOGIN)")
+    print(" 🚀 GOOGLE FLOW: СПИСОК АККАУНТОВ И СТАТУС СЕССИЙ")
     print("=" * 80)
 
-    user_data_path = chrome_profiles.get_chrome_user_data_path()
-    print(f"Каталог данных Chrome: {user_data_path}\n")
-
-    profiles = chrome_profiles.get_all_chrome_profiles(user_data_path)
+    profiles = gflow_backend.list_profiles()
     if not profiles:
-        print("[-] Профили Google Chrome не найдены.")
-        print("Убедитесь, что Google Chrome установлен, или укажите путь через переменную CHROME_USER_DATA.")
+        print(" [i] В базе пока нет авторизованных профилей gflow.")
+        print("\n💡 Как авторизовать аккаунты точечно:")
+        print("    .\\login.bat 1    (войти в аккаунт #1)")
+        print("    .\\login.bat 10   (войти в аккаунт #10)")
+        print("    .\\login.bat 34   (войти в аккаунт #34)")
+        print("\n💡 Или просто запустите: .\\login.bat")
+        print("=" * 80)
         return
 
-    print(f"Обнаружено профилей: {len(profiles)}\n")
-    print(f"{'#':<3} | {'Папка':<12} | {'Имя в Chrome':<20} | {'Google Email':<22} | {'Статус'}")
+    print(f"Всего обнаружено профилей в gflow: {len(profiles)}\n")
+    print(f"{'#':<4} | {'Профиль':<12} | {'Google Email':<28} | {'Статус сессии'}")
     print("-" * 80)
 
-    import time
     for idx, p in enumerate(profiles, start=1):
-        folder = p["folder"]
         name = p["name"]
-        if len(name) > 18:
-            name = name[:17] + "…"
-        email = chrome_profiles.mask_email(p["email"]) or "(локальный)"
-        if len(email) > 20:
-            email = email[:19] + "…"
-        is_verified, _ = chrome_profiles.verify_session(folder)
+        email = p.get("email", "") or "(вход выполнен)"
+        if len(email) > 26:
+            email = email[:25] + "…"
+        
         if p.get("is_exhausted"):
             until_ts = p.get("cooldown_until", 0)
             t_str = time.strftime('%H:%M', time.localtime(until_ts)) if until_ts else ""
-            status = f"⏳ ЛИМИТ (до {t_str})"
-        elif is_verified:
-            status = "✔ FLOW СЕССИЯ"
-        elif p["has_cookies"]:
-            status = "✔ ГОТОВ К ВХОДУ"
+            status = f"⏳ ЛИМИТ ДО {t_str}"
+        elif p.get("has_cookies"):
+            status = "✔ ГОТОВ К ГЕНЕРАЦИИ"
         else:
-            status = "⚠ НЕТ КУКОВ"
-        print(f"{idx:<3} | {folder:<12} | {name:<20} | {email:<22} | {status}")
+            status = "⚠ ТРЕБУЕТ ВХОДА"
+        print(f"{idx:<4} | {name:<12} | {email:<28} | {status}")
 
     print("-" * 80)
     print("\n💡 Как использовать профили для генерации:")
-    print('  1. Авто-ротация:       .\\generate.bat "Промпт" --profile auto   (переключает при исчерпании лимитов)')
-    print('  2. По номеру:          .\\generate.bat "Промпт" --profile 2')
-    print('  3. По имени папки:     .\\generate.bat "Промпт" --profile "Profile 2"')
-    print('  4. По имени в Chrome:  .\\generate.bat "Промпт" --profile "GeminiPro"')
-    print('  5. Сброс лимитов:      .\\generate.bat --reset-limits')
-    print('  6. Для фото:           .\\generate_image.bat "Промпт" --profile auto\n')
+    print('  1. Авто-ротация по всем: .\\generate.bat "Промпт" --profile auto')
+    print('  2. Точечно в аккаунт 10: .\\generate.bat 10 "Промпт"')
+    print('  3. Для генерации фото:   .\\generate_image.bat 10 "Промпт"')
+    print('  4. Сброс лимитов/квот:   .\\generate.bat --reset-limits')
+    print('  5. Авторизация аккаунта: .\\login.bat 10\n')
 
 if __name__ == "__main__":
     main()
+

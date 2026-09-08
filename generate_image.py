@@ -17,20 +17,8 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 BASE_DIR = Path(__file__).parent.resolve()
 VENV_GFLOW = BASE_DIR / ".venv" / "Scripts" / "gflow.exe"
 OUTPUT_DIR = BASE_DIR / "output" / "images"
-
-def get_gflow_bin() -> str:
-    if VENV_GFLOW.exists():
-        return str(VENV_GFLOW)
-    return "gflow"
-
-def check_auth() -> bool:
-    cmd = [get_gflow_bin(), "auth", "status"]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return result.returncode == 0
-
 import re
-from typing import Optional
-import chrome_profiles
+import gflow_backend
 
 def is_profile_like_arg(arg: str) -> bool:
     s = str(arg).strip()
@@ -44,8 +32,8 @@ def is_profile_like_arg(arg: str) -> bool:
         return True
     if s.lower() in ("default", "auto", "rotate", "next"):
         return True
-    for p in chrome_profiles.get_all_chrome_profiles():
-        if p["folder"].lower() == s.lower() or p["name"].lower() == s.lower():
+    for p in gflow_backend.list_profiles():
+        if p["name"].lower() == s.lower():
             return True
     return False
 
@@ -57,91 +45,14 @@ def generate_image(
     out_dir: Path | None = None,
     profile: str | None = None,
 ):
-    out_dir = out_dir or OUTPUT_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    profile = profile or "auto"
-
-    # Режим автоматической ротации при исчерпании лимитов
-    if profile.lower() in ("auto", "rotate", "next"):
-        all_profiles = chrome_profiles.get_all_chrome_profiles()
-        max_attempts = max(len(all_profiles), 1)
-        attempted_profiles: set[str] = set()
-
-        print(f"\n[Auto-Rotation] Режим автоматической ротации аккаунтов (всего обнаружено {len(all_profiles)} профилей).")
-        for attempt in range(max_attempts):
-            candidate = chrome_profiles.resolve_profile_folder("auto", exclude=attempted_profiles)
-            if candidate in attempted_profiles:
-                print("\n[!] Все доступные профили Chrome исчерпали квоту генераций!")
-                exhausted = chrome_profiles.get_exhausted_profiles()
-                if exhausted:
-                    print("    Статус исчерпанных профилей:")
-                    import time
-                    for f, info in exhausted.items():
-                        cooldown_ts = info.get("cooldown_until", 0)
-                        print(f"    - {f}: {info.get('reason')} (до {time.strftime('%H:%M:%S', time.localtime(cooldown_ts))})")
-                print("    Для сброса таймеров выполните: .\\generate_image.bat --reset-limits\n")
-                sys.exit(1)
-
-            print(f"\n[Auto-Rotation] 🚀 Попытка генерации через аккаунт '{candidate}' ({attempt + 1}/{max_attempts})...")
-            try:
-                import asyncio
-                from flow_engine import generate_image_auto
-                res_files = asyncio.run(
-                    generate_image_auto(
-                        prompt=prompt,
-                        out_dir=out_dir,
-                        model=model,
-                        aspect=aspect,
-                        count=count,
-                        profile=candidate,
-                    )
-                )
-                if res_files:
-                    print(f"\n[✔] Изображения успешно сохранены ({len(res_files)} шт.) в: {out_dir}")
-                    return
-                else:
-                    print(f"[-] На профиле '{candidate}' не удалось получить изображение за отведенное время.")
-                    attempted_profiles.add(candidate)
-                    continue
-            except chrome_profiles.QuotaExceededError as qe:
-                print(f"\n[Auto-Rotation] ⚠️ На профиле '{qe.profile}' закончились кредиты/квота: {qe.reason}")
-                chrome_profiles.mark_profile_exhausted(qe.profile, qe.reason)
-                attempted_profiles.add(qe.profile)
-                print(f"[Auto-Rotation] 🔄 Автоматический переход на следующий аккаунт из пула...")
-                continue
-            except Exception as exc:
-                print(f"[-] Ошибка генерации на профиле '{candidate}': {exc}")
-                attempted_profiles.add(candidate)
-                continue
-
-        print("\n[-] Не удалось завершить генерацию изображений ни на одном из доступных аккаунтов.")
-        sys.exit(1)
-    else:
-        try:
-            import asyncio
-            from flow_engine import generate_image_auto
-            res_files = asyncio.run(
-                generate_image_auto(
-                    prompt=prompt,
-                    out_dir=out_dir,
-                    model=model,
-                    aspect=aspect,
-                    count=count,
-                    profile=profile,
-                )
-            )
-            if res_files:
-                print(f"\n[✔] Изображения успешно сохранены ({len(res_files)} шт.) в: {out_dir}")
-                return
-        except chrome_profiles.QuotaExceededError as qe:
-            print(f"\n[-] Лимит генераций исчерпан для профиля '{qe.profile}': {qe.reason}")
-            print("💡 СОВЕТ: Запустите генерацию с флагом --profile auto для автоматического переключения на следующий аккаунт!")
-            print(f'   Пример: .\\generate_image.bat "{prompt}" --profile auto\n')
-            sys.exit(1)
-        except Exception as exc:
-            print(f"[-] Ошибка генерации: {exc}")
-            sys.exit(1)
+    return gflow_backend.generate_image(
+        prompt=prompt,
+        model=model,
+        aspect=aspect,
+        count=count,
+        out_dir=out_dir,
+        profile=profile,
+    )
 
 def main():
     parser = argparse.ArgumentParser(description="Google Flow (Imagen / Nano Banana) Image Generator")
@@ -193,6 +104,7 @@ def main():
     args = parser.parse_args()
 
     if args.reset_limits:
+        gflow_backend.reset_limits()
         chrome_profiles.reset_exhausted_limits()
         print("\n[✔] Кэш исчерпанных лимитов успешно сброшен. Все профили снова активны!\n")
         return
@@ -234,8 +146,8 @@ def main():
             print(" 🎨 GOOGLE FLOW STUDIO — ГЕНЕРАТОР ИЗОБРАЖЕНИЙ (IMAGEN 4)")
             print("=" * 65)
             if profile:
-                resolved_p = chrome_profiles.resolve_profile_folder(profile)
-                print(f" Выбранный профиль Chrome: {resolved_p}")
+                resolved_p = gflow_backend.normalize_profile_name(profile)
+                print(f" Выбранный профиль: {resolved_p}")
             else:
                 print(" Подсказка: Вы можете указать профиль: .\\generate_image.bat 10 \"Промпт\"")
             print("=" * 65)
@@ -246,19 +158,17 @@ def main():
             prompt = user_input
 
             if not profile:
-                print("\n[?] Выберите профиль Chrome:")
+                print("\n[?] Выберите профиль для генерации:")
                 print("    - Enter: 'auto' (автоматическая ротация по готовым аккаунтам)")
-                print("    - Номер строки (#1..#N) или номер профиля (например: 1, 2, 7, 10, 34)")
-                print("    - Имя профиля (например: Default, Profile 2, GeminiPro)")
+                print("    - Номер аккаунта (например: 1, 2, 10, 34)")
+                print("    - Имя профиля (например: default)")
                 prof_choice = input("👉 Профиль [по умолчанию auto]: ").strip()
                 profile = prof_choice if prof_choice else "auto"
         except (KeyboardInterrupt, EOFError):
             print("\nОперация отменена.")
             sys.exit(0)
 
-    profile = profile or "auto"
-    if profile.lower() not in ("auto", "rotate", "next"):
-        profile = chrome_profiles.resolve_profile_folder(profile)
+    profile = gflow_backend.normalize_profile_name(profile)
 
     out_dir = Path(args.out_dir) if args.out_dir else None
 
