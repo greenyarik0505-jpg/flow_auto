@@ -284,12 +284,11 @@ async def generate_image_auto(
 
             print(f"    [Flow] Ввод промпта...", flush=True)
             await composer.click()
-            await asyncio.sleep(0.5)
-            try:
-                await composer.fill(prompt)
-            except Exception:
-                await page.keyboard.type(prompt)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await page.keyboard.type(prompt)
+            await asyncio.sleep(0.8)
 
             # Запоминаем текущие картинки до отправки запроса
             initial_srcs = await page.evaluate("""() => {
@@ -300,9 +299,10 @@ async def generate_image_auto(
             initial_set = set(initial_srcs)
 
             submit_btn = page.locator(
+                "button.generate-icon-button, button[aria-label*='Start generation'], "
                 "button[aria-label*='Почати створення'], button[aria-label*='Start creating'], "
-                "button[aria-label*='Start generation'], button[aria-label*='Generate'], button[aria-label*='Створити'], "
-                "button:has-text('arrow_forward'), button.generate-icon-button, button[type='submit']"
+                "button[aria-label*='Generate'], button[aria-label*='Створити'], "
+                "button:has-text('arrow_forward'), button[type='submit']"
             ).first
 
             # Очищаем буфер сетевого перехвата строго перед запуском отправки
@@ -312,14 +312,15 @@ async def generate_image_auto(
                 classes = await submit_btn.get_attribute("class") or ""
                 disabled = await submit_btn.get_attribute("disabled")
                 if "mat-button-disabled" in classes or disabled is not None:
-                    quota_err = await check_ui_quota_limits(page) or "Кнопка генерации отключена (0 кредитов)"
-                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
-                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
-                print("    [Flow] Отправка запроса...", flush=True)
-                await submit_btn.click()
+                    # Если кнопка еще заблокирована, пробуем нажать Enter
+                    print("    [Flow] Отправка запроса по клавише Enter...", flush=True)
+                    await page.keyboard.press("Enter")
+                else:
+                    print("    [Flow] Отправка запроса...", flush=True)
+                    await submit_btn.click()
             else:
                 print("    [Flow] Отправка запроса по клавише Enter...", flush=True)
-                await composer.press("Enter")
+                await page.keyboard.press("Enter")
 
             await asyncio.sleep(2)
             quota_err = await check_ui_quota_limits(page)
@@ -456,14 +457,22 @@ async def generate_video_auto(
 
     out_file: Optional[Path] = None
     quota_state = {"exhausted": False, "reason": ""}
+    captured_videos: list[tuple[str, bytes]] = []
 
     async with async_playwright() as pw:
         context, page = await get_browser_context(pw, profile_path, profile_folder)
 
-        def on_response(resp):
+        async def on_response(resp):
             if resp.status == 429:
                 quota_state["exhausted"] = True
                 quota_state["reason"] = f"HTTP 429 Too Many Requests (Превышен лимит запросов Flow)"
+            elif resp.status == 200 and "flow-content.google/video" in resp.url:
+                try:
+                    body = await resp.body()
+                    if len(body) > 100000:
+                        captured_videos.append((resp.url, body))
+                except Exception:
+                    pass
 
         page.on("response", on_response)
 
@@ -484,40 +493,52 @@ async def generate_video_auto(
                 await asyncio.sleep(2)
                 composer = page.locator("div.ProseMirror, [contenteditable='true'], [role='textbox']").first
 
+            # Запоминаем текущие видео-карточки до отправки запроса
+            initial_video_count = await page.locator("div.video-container, [aria-label*='Open video']").count()
+            captured_videos.clear()
+
             print(f"    [Flow] Ввод промпта для видео...", flush=True)
             await composer.click()
-            await asyncio.sleep(0.5)
-            video_prompt = f"/video {prompt}" if not prompt.startswith("/") else prompt
-            try:
-                await composer.fill(video_prompt)
-            except Exception:
-                await page.keyboard.type(video_prompt)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
+            
+            # Для режима Agent формулируем понятную инструкцию на генерацию видео
+            if any(k in prompt.lower() for k in ["video", "видео", "клип"]):
+                video_prompt = prompt
+            else:
+                video_prompt = f"Create a video of {prompt}"
+
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await page.keyboard.type(video_prompt)
+            await asyncio.sleep(0.8)
 
             submit_btn = page.locator(
+                "button.generate-icon-button, button[aria-label*='Start generation'], "
                 "button[aria-label*='Почати створення'], button[aria-label*='Start creating'], "
-                "button[aria-label*='Start generation'], button[aria-label*='Generate'], button[aria-label*='Створити'], "
-                "button:has-text('arrow_forward'), button.generate-icon-button, button[type='submit']"
+                "button[aria-label*='Generate'], button[aria-label*='Створити'], "
+                "button:has-text('arrow_forward'), button[type='submit']"
             ).first
+
+            captured_videos.clear()
 
             if await submit_btn.count():
                 classes = await submit_btn.get_attribute("class") or ""
                 disabled = await submit_btn.get_attribute("disabled")
                 if "mat-button-disabled" in classes or disabled is not None:
-                    quota_err = await check_ui_quota_limits(page) or "Кнопка генерации отключена (0 кредитов)"
-                    chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
-                    raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
-                print("    [Flow] Отправка запроса...", flush=True)
-                await submit_btn.click()
+                    print("    [Flow] Отправка запроса по клавише Enter...", flush=True)
+                    await page.keyboard.press("Enter")
+                else:
+                    print("    [Flow] Отправка запроса...", flush=True)
+                    await submit_btn.click()
             else:
                 print("    [Flow] Отправка запроса по клавише Enter...", flush=True)
-                await composer.press("Enter")
+                await page.keyboard.press("Enter")
 
             print("[+] Запрос принят Google Flow! Ожидание генерации клипа (Gemini Omni / Veo)...", flush=True)
 
-            for i in range(25):
-                await asyncio.sleep(5)
-                elapsed = (i + 1) * 5
+            for i in range(35):
+                await asyncio.sleep(4)
+                elapsed = (i + 1) * 4
                 print(f"    ⏳ Рендеринг видео клипа... ({elapsed}с)", flush=True)
 
                 if quota_state["exhausted"]:
@@ -528,24 +549,47 @@ async def generate_video_auto(
                     chrome_profiles.mark_profile_exhausted(profile_folder, quota_err)
                     raise chrome_profiles.QuotaExceededError(profile_folder, quota_err)
 
-                dl_btn = page.locator("button:has(mat-icon:has-text('download'))").first
-                if await dl_btn.count():
-                    classes = await dl_btn.get_attribute("class") or ""
-                    if "disabled" not in classes:
-                        print("\n[✔] Рендеринг завершен! Экспорт и скачивание .mp4...", flush=True)
-                        timestamp = int(time.time())
-                        target_mp4 = out_dir / f"video_{timestamp}.mp4"
+                # Способ 1: Прямой перехват видео-потока
+                if captured_videos:
+                    print("\n[✔] Видео перехвачено из сетевого потока Google Flow!", flush=True)
+                    timestamp = int(time.time())
+                    target_mp4 = out_dir / f"video_{timestamp}.mp4"
+                    target_mp4.write_bytes(captured_videos[0][1])
+                    print(f"[✔] Видео успешно сохранено: {target_mp4.name} ({len(captured_videos[0][1])} байт)", flush=True)
+                    out_file = target_mp4
+                    break
+
+                # Способ 2: Скачивание через плеер карточки видео
+                curr_video_count = await page.locator("div.video-container, [aria-label*='Open video']").count()
+                if curr_video_count > initial_video_count or curr_video_count > 0:
+                    video_card = page.locator("div.video-container, [aria-label*='Open video']").first
+                    if await video_card.count():
                         try:
-                            async with page.expect_download(timeout=45000) as dl_info:
-                                await dl_btn.click()
-                            dl = await dl_info.value
-                            await dl.save_as(str(target_mp4))
-                            print(f"[✔] Видео успешно скачано: {target_mp4.name} ({target_mp4.stat().st_size} байт)", flush=True)
-                            out_file = target_mp4
-                            break
-                        except Exception as dl_err:
-                            print(f"[-] Ошибка при скачивании файла: {dl_err}", flush=True)
-                        break
+                            # Проверяем, не в процессе ли еще рендеринга карточка
+                            badge = video_card.locator(".play-icon-badge, mat-icon:has-text('play_circle')")
+                            if await badge.count():
+                                print("\n[✔] Рендеринг видео завершен на доске! Открытие для экспорта...", flush=True)
+                                await video_card.click()
+                                await asyncio.sleep(2)
+                                
+                                dl_btn = page.locator("button[aria-label='Download media'], button[aria-label='Download']").first
+                                if await dl_btn.count():
+                                    await dl_btn.click()
+                                    await asyncio.sleep(1)
+                                    menu_opt = page.locator("[role='menuitem']:has-text('720p'), [role='menuitem']:has-text('Original'), button:has-text('720p')").first
+                                    if await menu_opt.count():
+                                        timestamp = int(time.time())
+                                        target_mp4 = out_dir / f"video_{timestamp}.mp4"
+                                        async with page.expect_download(timeout=45000) as dl_info:
+                                            await menu_opt.click()
+                                        dl = await dl_info.value
+                                        await dl.save_as(str(target_mp4))
+                                        print(f"[✔] Видео успешно скачано: {target_mp4.name} ({target_mp4.stat().st_size} байт)", flush=True)
+                                        out_file = target_mp4
+                                        break
+                        except Exception as dl_ex:
+                            # Если еще загружается, продолжаем ждать в цикле
+                            pass
 
             if not out_file:
                 print("\n[!] Видео не было готово за отведенное время.", flush=True)
