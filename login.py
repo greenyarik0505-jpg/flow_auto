@@ -161,18 +161,16 @@ def verify_token(token: str) -> tuple[bool, str]:
         pass
     return False, ""
 
-def save_session_from_token(folder: str, token: str) -> tuple[bool, str]:
-    """
-    Сохраняет сессию Google Flow из токена __Secure-next-auth.session-token
-    и проверяет её валидность через официальный API.
-    """
+def save_session_from_token(folder: str, token: str, extra_cookies: Optional[list[dict]] = None) -> tuple[bool, str]:
+    """Сохраняет токен сессии и сопутствующие куки в файл .flow_sessions/."""
     token = clean_token_string(token)
     if not token or len(token) < 20:
         return False, ""
 
     session_file = chrome_profiles.get_session_file(folder)
     session_file.parent.mkdir(parents=True, exist_ok=True)
-    cookie_entry = {
+    
+    cookies = [{
         "name": "__Secure-next-auth.session-token",
         "value": token,
         "domain": "labs.google",
@@ -181,10 +179,25 @@ def save_session_from_token(folder: str, token: str) -> tuple[bool, str]:
         "httpOnly": True,
         "secure": True,
         "sameSite": "Lax"
-    }
+    }]
+
+    if extra_cookies:
+        cookies.extend(extra_cookies)
+    elif session_file.exists():
+        try:
+            old_data = json.loads(session_file.read_text(encoding="utf-8"))
+            for c in old_data.get("cookies", []):
+                if c.get("name") != "__Secure-next-auth.session-token":
+                    cookies.append(c)
+        except Exception:
+            pass
+
     state = {
-        "cookies": [cookie_entry],
-        "origins": [{"origin": "https://labs.google", "localStorage": []}]
+        "cookies": cookies,
+        "origins": [
+            {"origin": "https://flow.google.com", "localStorage": []},
+            {"origin": "https://labs.google", "localStorage": []}
+        ]
     }
     session_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
     
@@ -322,7 +335,7 @@ def capture_session_for_profile(
     known_invalid = set()
 
     # Открываем настоящий Chrome под нужным профилем
-    open_real_chrome_profile(folder, "https://labs.google/fx/tools/flow")
+    open_real_chrome_profile(folder, "https://flow.google.com/")
 
     print("\n[i] Ожидание входа в Google Flow...")
     print("    💡 Если страница попросит войти — нажмите 'Войти' (Sign in) в окне Chrome.")
