@@ -399,15 +399,6 @@ def find_chrome_executable() -> Optional[Path]:
             return c
     return None
 
-def is_cdp_available(host: str = "127.0.0.1", port: int = 9222, timeout: float = 0.5) -> bool:
-    """Проверяет, запущен ли Chrome с портом отладки CDP (например, port 9222)."""
-    import socket
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except Exception:
-        return False
-
 def get_session_file(profile_folder: str) -> Path:
     """Возвращает путь к сохраненному файлу состояния сессии Playwright."""
     safe_name = profile_folder.replace(" ", "_").lower()

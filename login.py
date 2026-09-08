@@ -1,14 +1,16 @@
 """
-Скрипт авторизации и управления профилями Google Flow.
-Поддержка 40+ профилей Google Chrome без конфликтов, без предупреждений --no-sandbox и с защитой от блокировок.
+Скрипт авторизации и управления сессиями Google Flow (40+ профилей).
+Запускает ваш НАСТОЯЩИЙ профиль Chrome (без режима гостя и без конфликтов)
+и сохраняет сессию в .flow_sessions/ для 100% автономной генерации в фоне.
 """
 import sys
 import os
+import re
 import json
 import asyncio
 import argparse
+import subprocess
 from pathlib import Path
-from playwright.async_api import async_playwright
 import chrome_profiles
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -33,11 +35,166 @@ window.chrome.runtime = window.chrome.runtime || {
 };
 """
 
+def get_clipboard_text() -> str:
+    """Читает текст из буфера обмена Windows через PowerShell."""
+    try:
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3
+        )
+        return res.stdout.strip()
+    except Exception:
+        return ""
+
+def open_real_chrome_profile(folder: str, url: str = "https://flow.google.com/") -> bool:
+    """
+    Открывает НАСТОЯЩИЙ профиль пользователя в Google Chrome.
+    Никакого режима гостя: все сохраненные аккаунты, пароли и закладки на месте.
+    """
+    chrome_exe = chrome_profiles.find_chrome_executable()
+    if not chrome_exe:
+        print("[-] Ошибка: Исполняемый файл Google Chrome не найден по стандартным путям.")
+        return False
+    
+    cmd = [str(chrome_exe), f"--profile-directory={folder}", url]
+    try:
+        subprocess.Popen(cmd)
+        return True
+    except Exception as e:
+        print(f"[-] Ошибка запуска Google Chrome: {e}")
+        return False
+
+def save_session_from_token(folder: str, token: str) -> bool:
+    """
+    Сохраняет сессию Google Flow из токена __Secure-next-auth.session-token
+    и проверяет её валидность через официальный API.
+    """
+    token = token.strip().strip('"').strip("'")
+    # Если передали строку вида __Secure-next-auth.session-token=...
+    if "=" in token and "__Secure" in token:
+        for part in token.split(";"):
+            part = part.strip()
+            if part.startswith("__Secure-next-auth.session-token="):
+                token = part.split("=", 1)[1].strip()
+                break
+
+    if not token or len(token) < 20:
+        print("[-] Ошибка: Токен слишком короткий или пустой.")
+        return False
+
+    session_file = chrome_profiles.get_session_file(folder)
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    cookie_entry = {
+        "name": "__Secure-next-auth.session-token",
+        "value": token,
+        "domain": "labs.google",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": True,
+        "secure": True,
+        "sameSite": "Lax"
+    }
+    state = {
+        "cookies": [cookie_entry],
+        "origins": [{"origin": "https://labs.google", "localStorage": []}]
+    }
+    session_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    
+    verified, user_email = chrome_profiles.verify_session(folder)
+    if verified:
+        print("\n" + "=" * 80)
+        print(f" [✔] СЕССИЯ ДЛЯ ПРОФИЛЯ '{folder}' УСПЕШНО СОХРАНЕНА И ПРОВЕРЕНА!")
+        print("=" * 80)
+        print(f"    Аккаунт: {chrome_profiles.mask_email(user_email)}")
+        print(f"    Файл сессии: {session_file.name}")
+        print("    Этот профиль готов к 100% фоновой генерации видео и фото!\n")
+        return True
+    else:
+        print(f"\n[!] Токен сохранен в {session_file.name}, но проверка через API вернула ошибку.")
+        print("    Убедитесь, что скопировано полное значение куки '__Secure-next-auth.session-token'.\n")
+        return False
+
+def authorize_profile_via_real_chrome(folder: str, display_name: str, email: str = "", force: bool = False) -> bool:
+    """
+    Основной метод авторизации: открывает настоящий профиль Chrome и помогает быстро сохранить сессию.
+    """
+    session_file = chrome_profiles.get_session_file(folder)
+    is_valid, user_email = chrome_profiles.verify_session(folder)
+
+    if is_valid and not force:
+        print("\n" + "=" * 80)
+        print(f" [✔] Профиль '{folder}' ({display_name}) УЖЕ АВТОРИЗОВАН!")
+        print("=" * 80)
+        print(f"    Аккаунт: {chrome_profiles.mask_email(user_email or email)}")
+        print(f"    Файл сессии: {session_file.name} готов к фоновой генерации.")
+        print("    Запуск генерации:")
+        print(f'      .\\generate.bat "Ваш промпт" --profile "{folder}"')
+        print(f'      .\\generate_image.bat "Ваш промпт" --profile "{folder}"\n')
+        
+        try:
+            ans = input("Хотите обновить сохраненную сессию для этого профиля? (y/N): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return True
+        if ans not in ("y", "yes", "д", "да"):
+            return True
+
+    print("\n" + "=" * 80)
+    print(f" 🚀 АВТОРИЗАЦИЯ GOOGLE FLOW: {folder} ({display_name})")
+    print("=" * 80)
+    masked = chrome_profiles.mask_email(email)
+    if masked:
+        print(f"Аккаунт профиля: {masked}")
+    print("[+] Открываем вкладку Google Flow в вашем НАСТОЯЩЕМ Chrome (НЕ режим гостя)...")
+    
+    open_real_chrome_profile(folder, "https://flow.google.com/")
+
+    print("\n💡 В открывшемся окне Chrome:")
+    print("  1. Если требуется, нажмите 'Создать в Google Flow' или выберите ваш аккаунт.")
+    print("  2. Скопируйте токен авторизации одним из двух простых способов:")
+    print("     -------------------------------------------------------------------------")
+    print("     👉 Вариант 1 (В 1 КЛИК через расширение flow_extension):")
+    print("        Установите папку flow_extension в chrome://extensions (Режим разработчика),")
+    print("        нажмите на значок расширения -> 'Скопировать токен Flow'.")
+    print("     -------------------------------------------------------------------------")
+    print("     👉 Вариант 2 (Через DevTools F12):")
+    print("        В открытой вкладке flow.google.com нажмите F12 -> вкладка 'Application'")
+    print("        -> Cookies -> https://labs.google -> значение '__Secure-next-auth.session-token'.")
+    print("     -------------------------------------------------------------------------")
+
+    clip = get_clipboard_text()
+    if clip and (clip.startswith("ey") or "__Secure-next-auth" in clip) and len(clip) > 30:
+        print(f"\n[i] В буфере обмена Windows найден токен Flow ({len(clip)} симв.)!")
+        try:
+            use_clip = input("Использовать токен из буфера обмена? [Enter = Да, или введите другой]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            use_clip = ""
+        if not use_clip:
+            return save_session_from_token(folder, clip)
+        else:
+            return save_session_from_token(folder, use_clip)
+
+    print()
+    try:
+        token = input("Вставьте скопированный токен (или нажмите Enter для отмены): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nОперация отменена.")
+        return False
+
+    if not token:
+        print("[-] Токен не введен.")
+        return False
+
+    return save_session_from_token(folder, token)
+
 async def auto_advance_page(page, email_hint: str = "") -> None:
-    """Автоматически нажимает кнопки входа, выбора аккаунта и принятия условий."""
+    """Вспомогательная функция автокликов для Playwright."""
     try:
         url = page.url
-        # 1. Кнопка "Создать / Створити / Try" на лендинге flow.google.com/about
         if "flow.google.com/about" in url:
             btn = page.locator(
                 "button:has-text('Создать'), button:has-text('Створити'), button:has-text('Try'), "
@@ -48,7 +205,6 @@ async def auto_advance_page(page, email_hint: str = "") -> None:
                 await asyncio.sleep(2)
                 return
 
-        # 2. Выбор аккаунта на accounts.google.com
         if "accounts.google.com" in url:
             acc = None
             if email_hint and "@" in email_hint:
@@ -70,7 +226,6 @@ async def auto_advance_page(page, email_hint: str = "") -> None:
                 await asyncio.sleep(2)
                 return
 
-        # 3. Диалог принятия условий использования (Terms of Service)
         tos = page.locator(
             "button:has-text('Принять'), button:has-text('Прийняти'), button:has-text('Accept'), "
             "button:has-text('Agree'), button:has-text('Продолжить'), button:has-text('Далее')"
@@ -82,63 +237,21 @@ async def auto_advance_page(page, email_hint: str = "") -> None:
     except Exception:
         pass
 
-def save_session_from_token(folder: str, token: str) -> bool:
-    """Мгновенно сохраняет сессию из токена __Secure-next-auth.session-token без открытия браузера."""
-    token = token.strip().strip('"').strip("'")
-    if not token:
-        print("[-] Токен не может быть пустым.")
-        return False
+async def authorize_profile_automated(folder: str, display_name: str, email: str = "", headless: bool = False) -> bool:
+    """Запуск изолированного Playwright контекста для автоматического входа (флаг --automated)."""
     session_file = chrome_profiles.get_session_file(folder)
-    session_file.parent.mkdir(parents=True, exist_ok=True)
-    cookie_entry = {
-        "name": "__Secure-next-auth.session-token",
-        "value": token,
-        "domain": "labs.google",
-        "path": "/",
-        "expires": -1,
-        "httpOnly": True,
-        "secure": True,
-        "sameSite": "Lax"
-    }
-    state = {
-        "cookies": [cookie_entry],
-        "origins": [{"origin": "https://labs.google", "localStorage": []}]
-    }
-    session_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-    verified, user_email = chrome_profiles.verify_session(folder)
-    if verified:
-        print(f"\n[✔] ТОКЕН УСПЕШНО СОХРАНЕН И ПРОВЕРЕН ДЛЯ '{folder}'!")
-        print(f"    Аккаунт: {chrome_profiles.mask_email(user_email)}")
-        print(f"    Файл сессии: {session_file.name}")
-        print("    Этот профиль готов к 100% фоновой генерации видео и фото!\n")
-        return True
-    else:
-        print(f"\n[!] Токен записан в {session_file.name}, но проверка сессии вернула отрицательный ответ.")
-        print("    Убедитесь, что скопировано полное значение куки '__Secure-next-auth.session-token'.\n")
-        return False
-
-async def authorize_profile_interactive(folder: str, display_name: str, email: str = "", headless: bool = False) -> bool:
-    session_file = chrome_profiles.get_session_file(folder)
-    
-    # 1. Проверяем, не авторизован ли уже этот профиль
     is_valid, user_email = chrome_profiles.verify_session(folder)
     if is_valid:
-        print(f"\n[✔] Профиль '{folder}' ({display_name}) УЖЕ АВТОРИЗОВАН!")
-        print(f"    Аккаунт: {chrome_profiles.mask_email(user_email or email)}")
-        print(f"    Файл сессии: {session_file.name} готов к фоновой работе.\n")
+        print(f"\n[✔] Профиль '{folder}' ({display_name}) уже авторизован!")
         return True
 
     synced_dir = chrome_profiles.sync_chrome_profile_for_automation(folder, force_sync=True)
 
     print("\n" + "=" * 80)
-    print(f" 🚀 ВХОД В GOOGLE FLOW: {folder} ({display_name})")
+    print(f" 🚀 АВТОМАТИЧЕСКИЙ ВХОД (PLAYWRIGHT): {folder} ({display_name})")
     print("=" * 80)
-    print("Открывается защищенное окно Google Chrome (без предупреждений --no-sandbox):")
-    print(" 1. Скрипт автоматически нажмет 'Создать в Google Flow' и выберет ваш аккаунт.")
-    print(" 2. Если потребуется ввод пароля/подтверждение — выполните его в окне браузера.")
-    print(" 👉 Как только откроется рабочая область Flow, сессия сохранится и окно закроется САМО!")
-    print("=" * 80 + "\n")
 
+    from playwright.async_api import async_playwright
     async with async_playwright() as pw:
         ctx = await pw.chromium.launch_persistent_context(
             user_data_dir=str(synced_dir),
@@ -159,44 +272,32 @@ async def authorize_profile_interactive(folder: str, display_name: str, email: s
         except Exception:
             pass
 
-        print("[+] Окно Chrome открыто. Ожидание входа в Google Flow (до 180 сек)...")
+        print("[+] Браузер открыт. Ожидание входа в Google Flow (до 180 сек)...")
         logged_in = False
 
         for step in range(90):
             await asyncio.sleep(2)
             try:
                 if page.is_closed():
-                    print("[-] Окно браузера было закрыто.")
                     break
-
-                # Автоматически продвигаем кликами по кнопкам
                 await auto_advance_page(page, email_hint=email)
-
-                # Проверка успешного входа
                 url = page.url
                 if "flow.google.com" in url and "about" not in url and "accounts.google.com" not in url:
                     logged_in = True
                     break
-
-                # Проверка наличия поля ввода промпта (ProseMirror)
                 composer = page.locator("[contenteditable='true'].ProseMirror, [contenteditable='true']").first
                 if await composer.count():
                     logged_in = True
                     break
-
-                # Проверка наличия ссылки на проект
                 prj = page.locator("a[href*='/project/']").first
                 if await prj.count():
                     logged_in = True
                     break
-
-                # Проверка наличия куки NextAuth
                 all_cookies = await ctx.cookies()
                 has_nextauth = any(c.get("name") == "__Secure-next-auth.session-token" for c in all_cookies)
                 if has_nextauth and "accounts.google.com" not in url:
                     logged_in = True
                     break
-
             except Exception:
                 break
 
@@ -205,37 +306,31 @@ async def authorize_profile_interactive(folder: str, display_name: str, email: s
             session_file.parent.mkdir(parents=True, exist_ok=True)
             state = await ctx.storage_state()
             session_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-            
-            # Проверяем сохраненную сессию через API
             verified, verified_email = chrome_profiles.verify_session(folder)
             masked = chrome_profiles.mask_email(verified_email or email)
-
-            print("\n" + "=" * 80)
-            print(f" [✔] СЕССИЯ ДЛЯ АККАУНТА '{folder}' УСПЕШНО СОХРАНЕНА И ПРОВЕРЕНА!")
-            print("=" * 80)
-            print(f"    Аккаунт: {masked}")
-            print(f"    Файл сессии: {session_file.name}")
-            print(f"    Статус: Готов к фоновой генерации видео и фото без окон!\n")
-            
+            print(f"\n[✔] Сессия успешно сохранена для '{folder}' ({masked})!")
             await ctx.close()
             return True
         else:
-            print(f"[-] Не удалось зафиксировать вход для профиля '{folder}'.")
+            print(f"[-] Не удалось зафиксировать вход для '{folder}'.")
             await ctx.close()
             return False
 
 def main():
     parser = argparse.ArgumentParser(description="Google Flow: Авторизация аккаунтов Chrome (40+ профилей)")
     parser.add_argument("profile", type=str, nargs="?", default=None, help="Номер или имя профиля (например: 2, 'Profile 2')")
+    parser.add_argument("token_pos", type=str, nargs="?", default=None, help="Токен сессии (опционально: login.bat 2 <token>)")
     parser.add_argument("--profile", dest="profile_opt", type=str, default=None, help="Имя или номер профиля")
+    parser.add_argument("--token", type=str, default=None, help="Вставить готовый токен __Secure-next-auth.session-token напрямую")
     parser.add_argument("--all", action="store_true", help="Авторизовать все доступные профили Chrome по очереди")
     parser.add_argument("--list", action="store_true", help="Только показать статус сессий всех профилей")
-    parser.add_argument("--headless", action="store_true", help="Запуск в фоновом режиме")
-    parser.add_argument("--token", type=str, default=None, help="Вставить готовый токен __Secure-next-auth.session-token напрямую")
-    parser.add_argument("--open", action="store_true", help="Открыть ваш реальный профиль Chrome для мгновенного входа в 1 клик")
+    parser.add_argument("--force", action="store_true", help="Принудительно перезаписать сессию, даже если она уже валидна")
+    parser.add_argument("--automated", action="store_true", help="Использовать изолированный браузер Playwright вместо реального Chrome")
+    parser.add_argument("--headless", action="store_true", help="Фоновый режим для --automated")
     args = parser.parse_args()
 
     profile_selector = args.profile or args.profile_opt
+    direct_token = args.token or args.token_pos
 
     profiles = chrome_profiles.get_all_chrome_profiles()
     if not profiles:
@@ -245,7 +340,7 @@ def main():
     print("=" * 80)
     print(" 🚀 GOOGLE FLOW: СТАТУС СЕССИЙ АККАУНТОВ (40+ ПРОФИЛЕЙ)")
     print("=" * 80)
-    print(f"Каталог данных: {chrome_profiles.get_chrome_user_data_path()}\n")
+    print(f"Каталог данных Chrome: {chrome_profiles.get_chrome_user_data_path()}\n")
 
     print(f"{'#':<3} | {'Папка':<12} | {'Имя в Chrome':<20} | {'Email':<22} | {'Сессия Flow'}")
     print("-" * 80)
@@ -270,9 +365,9 @@ def main():
     if args.list:
         return
 
+    # Если профиль не указан, берем первый неавторизованный (или Default)
     if not profile_selector:
         target_p = None
-        # Ищем первый неавторизованный профиль
         for p in profiles:
             is_verified, _ = chrome_profiles.verify_session(p["folder"])
             if not is_verified:
@@ -293,35 +388,29 @@ def main():
                 chosen_email = p.get("email", "")
                 break
 
-    # 1. Если передан токен напрямую через --token
-    if args.token:
-        save_session_from_token(chosen_folder, args.token)
+    # 1. Если токен передан напрямую аргументом (.\\login.bat 2 <token> или --token <token>)
+    if direct_token:
+        save_session_from_token(chosen_folder, direct_token)
         return
 
-    # 2. Если передан флаг --open для открытия в реальном Chrome
-    if args.open:
-        chrome_exe = chrome_profiles.find_chrome_executable()
-        if not chrome_exe:
-            print("[-] Google Chrome не найден.")
-            return
-        print(f"\n[+] Открытие профиля '{chosen_name}' в вашем Google Chrome...")
-        import subprocess
-        subprocess.Popen([str(chrome_exe), f"--profile-directory={chosen_folder}", "https://flow.google.com/"])
-        print("[✔] Вкладка открыта в вашем Chrome со всеми вашими существующими аккаунтами!")
-        print("💡 После входа в Flow вы можете передать токен сессии:")
-        print(f"   .\\login.bat {chosen_folder} --token \"<значение_куки_session-token>\"\n")
-        return
-
+    # 2. Пакетная авторизация --all
     if args.all:
         for p in profiles:
             folder = p["folder"]
             is_verified, _ = chrome_profiles.verify_session(folder)
-            if not is_verified:
-                asyncio.run(authorize_profile_interactive(folder, p["name"], p.get("email", ""), headless=args.headless))
-        print("\n[✔] Авторизация всех профилей завершена!")
+            if not is_verified or args.force:
+                if args.automated:
+                    asyncio.run(authorize_profile_automated(folder, p["name"], p.get("email", ""), headless=args.headless))
+                else:
+                    authorize_profile_via_real_chrome(folder, p["name"], p.get("email", ""), force=args.force)
+        print("\n[✔] Обработка всех профилей завершена!")
         return
 
-    asyncio.run(authorize_profile_interactive(chosen_folder, chosen_name, chosen_email, headless=args.headless))
+    # 3. Одиночная авторизация выбранного профиля
+    if args.automated:
+        asyncio.run(authorize_profile_automated(chosen_folder, chosen_name, chosen_email, headless=args.headless))
+    else:
+        authorize_profile_via_real_chrome(chosen_folder, chosen_name, chosen_email, force=args.force)
 
 if __name__ == "__main__":
     main()

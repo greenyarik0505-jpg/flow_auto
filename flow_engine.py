@@ -123,23 +123,10 @@ def get_automation_profile(
 
 async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Default"):
     """
-    Получает контекст браузера:
-    1. Если Chrome запущен на порту 9222 (start_chrome_debug.bat) — подключается через CDP.
-    2. Если есть файл сессии .flow_sessions/ — загружает куки сессии.
-    3. Иначе запускает изолированный persistent context без конфликтов с Chrome.
+    Запускает изолированный фоновый контекст браузера Playwright:
+    1. Если есть файл сессии .flow_sessions/ — загружает куки сессии.
+    2. Запускает persistent context без конфликтов с Chrome.
     """
-    if chrome_profiles.is_cdp_available(port=9222):
-        print("    [CDP] Обнаружен запущенный Google Chrome на порту 9222! Подключение...")
-        browser = await pw.chromium.connect_over_cdp("http://127.0.0.1:9222")
-        ctx = browser.contexts[0]
-        flow_page = None
-        for p in ctx.pages:
-            if "flow.google.com" in p.url and "about" not in p.url:
-                flow_page = p
-                break
-        page = flow_page if flow_page else await ctx.new_page()
-        return ctx, page, True, browser
-
     session_file = chrome_profiles.get_session_file(profile_folder)
     storage_state_arg = str(session_file) if session_file.exists() else None
 
@@ -169,7 +156,7 @@ async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Def
             pass
 
     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-    return ctx, page, False, None
+    return ctx, page
 
 async def ensure_flow_workspace(page):
     """Обеспечивает переход в рабочую область проекта Google Flow."""
@@ -231,7 +218,7 @@ async def generate_image_auto(
     quota_state = {"exhausted": False, "reason": ""}
 
     async with async_playwright() as pw:
-        context, page, is_cdp, browser = await get_browser_context(pw, profile_path, profile_folder)
+        context, page = await get_browser_context(pw, profile_path, profile_folder)
 
         def on_response(resp):
             if resp.status == 429:
@@ -311,8 +298,7 @@ async def generate_image_auto(
                     break
 
         finally:
-            if not is_cdp:
-                await context.close()
+            await context.close()
 
     return saved_files
 
@@ -337,7 +323,7 @@ async def generate_video_auto(
     quota_state = {"exhausted": False, "reason": ""}
 
     async with async_playwright() as pw:
-        context, page, is_cdp, browser = await get_browser_context(pw, profile_path, profile_folder)
+        context, page = await get_browser_context(pw, profile_path, profile_folder)
 
         def on_response(resp):
             if resp.status == 429:
@@ -429,7 +415,6 @@ async def generate_video_auto(
                         break
 
         finally:
-            if not is_cdp:
-                await context.close()
+            await context.close()
 
     return out_file
