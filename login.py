@@ -275,6 +275,9 @@ def scan_chrome_memory_for_flow_session(pids: list[int], known_invalid: set[str]
                                 if cand and cand not in known_invalid:
                                     ok, auth_email = verify_token(cand)
                                     if ok:
+                                        if expected_email and auth_email.lower() != expected_email.lower():
+                                            known_invalid.add(cand)
+                                            continue
                                         kernel32.CloseHandle(handle)
                                         return cand, auth_email
                                     else:
@@ -288,6 +291,9 @@ def scan_chrome_memory_for_flow_session(pids: list[int], known_invalid: set[str]
                                     if cand and cand not in known_invalid and len(cand) > 300:
                                         ok, auth_email = verify_token(cand)
                                         if ok:
+                                            if expected_email and auth_email.lower() != expected_email.lower():
+                                                known_invalid.add(cand)
+                                                continue
                                             kernel32.CloseHandle(handle)
                                             return cand, auth_email
                                         else:
@@ -334,6 +340,20 @@ def capture_session_for_profile(
     initial_clip = get_clipboard_text()
     known_invalid = set()
 
+    # Защита от перекрестного захвата: исключаем токены из всех ДРУГИХ профилей
+    for other_p in chrome_profiles.get_all_chrome_profiles():
+        if other_p["folder"] != folder:
+            other_sess = chrome_profiles.get_session_file(other_p["folder"])
+            if other_sess.exists():
+                try:
+                    sdata = json.loads(other_sess.read_text(encoding="utf-8"))
+                    for c in sdata.get("cookies", []):
+                        val = c.get("value")
+                        if val:
+                            known_invalid.add(val)
+                except Exception:
+                    pass
+
     # Открываем настоящий Chrome под нужным профилем
     open_real_chrome_profile(folder, "https://flow.google.com/")
 
@@ -366,30 +386,39 @@ def capture_session_for_profile(
             if _latest_received_token:
                 candidate = _latest_received_token
                 _latest_received_token = None
-                saved_ok, auth_email = save_session_from_token(folder, candidate)
-                if saved_ok:
-                    print("\n" + "=" * 80)
-                    print(f" [✔] СЕССИЯ ДЛЯ '{folder}' ПОЛУЧЕНА И СОХРАНЕНА!")
-                    print(f"     Аккаунт : {chrome_profiles.mask_email(auth_email or email)}")
-                    print(f"     Файл    : {session_file.name}")
-                    print("     ✔ Сессия проверена! Сразу переходим к следующему профилю...")
-                    print("=" * 80)
-                    return True
+                if candidate not in known_invalid:
+                    ok, auth_email = verify_token(candidate)
+                    if ok and (not email or auth_email.lower() == email.lower()):
+                        saved_ok, auth_email = save_session_from_token(folder, candidate)
+                        if saved_ok:
+                            print("\n" + "=" * 80)
+                            print(f" [✔] СЕССИЯ ДЛЯ '{folder}' ПОЛУЧЕНА И СОХРАНЕНА!")
+                            print(f"     Аккаунт : {chrome_profiles.mask_email(auth_email or email)}")
+                            print(f"     Файл    : {session_file.name}")
+                            print("     ✔ Сессия проверена! Сразу переходим к следующему профилю...")
+                            print("=" * 80)
+                            return True
+                    else:
+                        known_invalid.add(candidate)
 
         # 3. Проверяем буфер обмена Windows (если пользователь скопировал токен)
         current_clip = get_clipboard_text()
         if current_clip and current_clip != last_clip:
             cleaned = clean_token_string(current_clip)
-            if len(cleaned) > 25 and ("ey" in cleaned[:10] or "auth" in current_clip.lower()):
-                saved_ok, auth_email = save_session_from_token(folder, cleaned)
-                if saved_ok:
-                    print("\n" + "=" * 80)
-                    print(f" [✔] КУКИ ДЛЯ '{folder}' ЗАХВАЧЕНЫ ИЗ БУФЕРА ОБМЕНА!")
-                    print(f"     Аккаунт : {chrome_profiles.mask_email(auth_email or email)}")
-                    print(f"     Файл    : {session_file.name}")
-                    print("     ✔ Сессия проверена! Сразу переходим к следующему профилю...")
-                    print("=" * 80)
-                    return True
+            if len(cleaned) > 25 and ("ey" in cleaned[:10] or "auth" in current_clip.lower()) and cleaned not in known_invalid:
+                ok, auth_email = verify_token(cleaned)
+                if ok and (not email or auth_email.lower() == email.lower()):
+                    saved_ok, auth_email = save_session_from_token(folder, cleaned)
+                    if saved_ok:
+                        print("\n" + "=" * 80)
+                        print(f" [✔] КУКИ ДЛЯ '{folder}' ЗАХВАЧЕНЫ ИЗ БУФЕРА ОБМЕНА!")
+                        print(f"     Аккаунт : {chrome_profiles.mask_email(auth_email or email)}")
+                        print(f"     Файл    : {session_file.name}")
+                        print("     ✔ Сессия проверена! Сразу переходим к следующему профилю...")
+                        print("=" * 80)
+                        return True
+                else:
+                    known_invalid.add(cleaned)
             last_clip = current_clip
 
         # Индикатор ожидания
@@ -478,8 +507,32 @@ def main():
             print("[-] Ошибка валидации токена.")
         return
 
-    # 2. Пакетная авторизация всех профилей (--all или если профиль не указан)
-    run_all = args.all or (not profile_selector)
+    # 2. Выбор профиля или пакетный вход
+    if not profile_selector and not args.all:
+        print("\n" + "=" * 80)
+        print(" [?] ВЫБОР ПРОФИЛЯ ДЛЯ ВХОДА:")
+        print("     - Введите номер строки (#1..#N) или номер профиля (например: 1, 2, 7, 10, 34)")
+        print("     - Введите имя профиля (например: Default, Profile 2, GeminiPro)")
+        print("     - Введите 'all' для последовательного входа во ВСЕ профили по очереди")
+        print("     - Нажмите Enter для выхода")
+        print("=" * 80)
+        try:
+            choice = input("\n👉 Ваш выбор: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nВыход.")
+            return
+
+        if not choice:
+            print("Выход.")
+            return
+
+        if choice.lower() in ("all", "все", "a"):
+            run_all = True
+        else:
+            profile_selector = choice
+            run_all = False
+    else:
+        run_all = bool(args.all)
 
     if run_all:
         unauthorized = [p for p in profiles if not chrome_profiles.verify_session(p["folder"])[0] or args.force]
@@ -521,9 +574,10 @@ def main():
     chosen_name = chosen_folder
     chosen_email = ""
     for p in profiles:
-        if p["folder"] == chosen_folder:
+        if p["folder"].lower() == chosen_folder.lower():
             chosen_name = p["name"]
             chosen_email = p.get("email", "")
+            chosen_folder = p["folder"]
             break
 
     capture_session_for_profile(
@@ -533,6 +587,7 @@ def main():
         force=args.force,
         timeout_sec=args.timeout
     )
+    return
 
 if __name__ == "__main__":
     main()

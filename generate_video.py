@@ -18,7 +18,26 @@ BASE_DIR = Path(__file__).parent.resolve()
 VENV_GFLOW = BASE_DIR / ".venv" / "Scripts" / "gflow.exe"
 OUTPUT_DIR = BASE_DIR / "output" / "videos"
 
+import re
+from typing import Optional
 import chrome_profiles
+
+def is_profile_like_arg(arg: str) -> bool:
+    s = str(arg).strip()
+    if not s:
+        return False
+    if s.isdigit():
+        return True
+    if re.match(r"^#\d+$", s):
+        return True
+    if re.match(r"^(?:profile\s*|p)\d+$", s, re.IGNORECASE):
+        return True
+    if s.lower() in ("default", "auto", "rotate", "next"):
+        return True
+    for p in chrome_profiles.get_all_chrome_profiles():
+        if p["folder"].lower() == s.lower() or p["name"].lower() == s.lower():
+            return True
+    return False
 
 def generate_video(
     prompt: str,
@@ -116,7 +135,7 @@ def generate_video(
 
 def main():
     parser = argparse.ArgumentParser(description="Google Flow (Veo / Gemini Omni) Video Generator")
-    parser.add_argument("prompt", type=str, nargs="?", default=None, help="Текстовый промпт для генерации видео")
+    parser.add_argument("prompt", type=str, nargs="*", default=None, help="Текстовый промпт для генерации видео")
     parser.add_argument(
         "--model",
         type=str,
@@ -173,33 +192,73 @@ def main():
         list_profiles.main()
         return
 
-    if not args.prompt:
+    prompt = None
+    profile = args.profile
+
+    if args.prompt:
+        parts = args.prompt if isinstance(args.prompt, list) else [args.prompt]
+        if len(parts) == 1:
+            p0 = parts[0]
+            if is_profile_like_arg(p0) and not profile:
+                profile = p0
+            else:
+                prompt = p0
+        elif len(parts) >= 2:
+            p0, p1 = parts[0], parts[1]
+            if is_profile_like_arg(p0) and not is_profile_like_arg(p1):
+                profile = profile or p0
+                prompt = " ".join(parts[1:])
+            elif is_profile_like_arg(p1) and not is_profile_like_arg(p0):
+                profile = profile or p1
+                prompt = parts[0]
+            else:
+                if is_profile_like_arg(p1):
+                    profile = profile or p1
+                    prompt = parts[0]
+                else:
+                    prompt = " ".join(parts)
+
+    if not prompt:
         try:
             print("\n" + "=" * 65)
             print(" 🎬 GOOGLE FLOW STUDIO — ГЕНЕРАТОР ВИДЕО (VEO / OMNI)")
             print("=" * 65)
-            print(" Режим: Автоматическая ротация по всем профилям Chrome")
-            print(" Подсказка: Вы также можете передавать параметры в консоли:")
-            print('   .\\generate.bat "Ваш промпт" --profile auto')
+            if profile:
+                resolved_p = chrome_profiles.resolve_profile_folder(profile)
+                print(f" Выбранный профиль Chrome: {resolved_p}")
+            else:
+                print(" Подсказка: Вы можете указать профиль: .\\generate.bat 10 \"Промпт\"")
             print("=" * 65)
             user_input = input("\n[?] Введите текстовый промпт для генерации видео: ").strip()
             if not user_input:
                 print("\n[!] Ошибка: Промпт не может быть пустым.")
                 sys.exit(1)
-            args.prompt = user_input
+            prompt = user_input
+
+            if not profile:
+                print("\n[?] Выберите профиль Chrome:")
+                print("    - Enter: 'auto' (автоматическая ротация по готовым аккаунтам)")
+                print("    - Номер строки (#1..#N) или номер профиля (например: 1, 2, 7, 10, 34)")
+                print("    - Имя профиля (например: Default, Profile 2, GeminiPro)")
+                prof_choice = input("👉 Профиль [по умолчанию auto]: ").strip()
+                profile = prof_choice if prof_choice else "auto"
         except (KeyboardInterrupt, EOFError):
             print("\nОперация отменена.")
             sys.exit(0)
 
+    profile = profile or "auto"
+    if profile.lower() not in ("auto", "rotate", "next"):
+        profile = chrome_profiles.resolve_profile_folder(profile)
+
     out_dir = Path(args.out_dir) if args.out_dir else None
 
     generate_video(
-        prompt=args.prompt,
+        prompt=prompt,
         model=args.model,
         aspect=args.aspect,
         duration=args.duration,
         out_dir=out_dir,
-        profile=args.profile,
+        profile=profile,
     )
 
 if __name__ == "__main__":

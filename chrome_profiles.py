@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import time
+import re
 import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -38,7 +39,7 @@ def is_profile_flow_ready(profile_folder: str) -> bool:
     try:
         data = json.loads(session_file.read_text(encoding="utf-8"))
         cookies = data.get("cookies", [])
-        return any("OSID" in c.get("name", "") or "SID" in c.get("name", "") for c in cookies)
+        return any("session-token" in c.get("name", "") or "OSID" in c.get("name", "") or "SID" in c.get("name", "") for c in cookies)
     except Exception:
         return False
 
@@ -266,22 +267,49 @@ def resolve_profile_folder(
     if sel.lower() in ("auto", "rotate", "next"):
         return get_next_rotated_profile(profiles, exclude=exclude_set, user_data_dir=user_data_dir)
 
-    # Точное совпадение с папкой
+    # 1. Точное совпадение с именем папки (case-insensitive)
     for p in profiles:
         if p["folder"].lower() == sel.lower():
             return p["folder"]
 
-    # Числовой ввод: 2 -> 'Profile 2'
-    if sel.isdigit():
-        target = f"Profile {sel}"
+    # 2. Если ввод с решеткой вида '#1', '#2', '#10' (явный выбор строки таблицы)
+    hash_match = re.match(r"^#(\d+)$", sel)
+    if hash_match:
+        idx = int(hash_match.group(1))
+        if 1 <= idx <= len(profiles):
+            return profiles[idx - 1]["folder"]
+
+    # 3. Если ввод вида 'Profile 10', 'profile10', 'p10'
+    p_match = re.match(r"^(?:profile\s*|p)(\d+)$", sel, re.IGNORECASE)
+    if p_match:
+        num_str = p_match.group(1)
+        target = f"Profile {num_str}"
         for p in profiles:
             if p["folder"].lower() == target.lower():
                 return p["folder"]
-        idx = int(sel) - 1
-        if 0 <= idx < len(profiles):
-            return profiles[idx]["folder"]
+        return target
 
-    # Поиск по отображаемому имени в Chrome
+    # 4. Числовой ввод (например: 1, 2, 6, 10, 34)
+    if sel.isdigit():
+        num = int(sel)
+        # Если 1 — это всегда первый профиль (обычно 'Default')
+        if num == 1:
+            return profiles[0]["folder"] if profiles else "Default"
+
+        # Сначала проверяем, есть ли профиль с именем папки 'Profile {num}' (например: 6 -> Profile 6)
+        target = f"Profile {num}"
+        for p in profiles:
+            if p["folder"].lower() == target.lower():
+                return p["folder"]
+
+        # Если прямого имени 'Profile {num}' нет, проверяем порядковый номер таблицы (#1..#N)
+        if 1 <= num <= len(profiles):
+            return profiles[num - 1]["folder"]
+
+        # Если такого профиля еще нет в Chrome (например, пользователь настраивает 10-й или 34-й)
+        return target
+
+    # 4. Поиск по отображаемому имени в Chrome
     for p in profiles:
         if p["name"].lower() == sel.lower():
             return p["folder"]

@@ -127,9 +127,15 @@ async def get_browser_context(pw, profile_path: Path, profile_folder: str = "Def
     Загружает сессию из .flow_sessions/ без блокировки дисковых профилей Chrome (ProcessSingleton).
     """
     session_file = chrome_profiles.get_session_file(profile_folder)
-    storage_state_arg = str(session_file) if session_file.exists() else None
-
-    if storage_state_arg:
+    if not session_file.exists():
+        if profile_folder.lower() != "default":
+            print(f"\n[-] ОШИБКА: Для профиля '{profile_folder}' не найдена сохраненная сессия Flow!", flush=True)
+            print(f"💡 Чтобы авторизовать этот аккаунт, запустите:", flush=True)
+            print(f"   .\\login.bat {profile_folder}\n", flush=True)
+            raise RuntimeError(f"Сессия Flow для '{profile_folder}' отсутствует. Сначала выполните: .\\login.bat {profile_folder}")
+        storage_state_arg = None
+    else:
+        storage_state_arg = str(session_file)
         print(f"    [Сессия] Загрузка сохраненной сессии: {session_file.name}", flush=True)
 
     print("    [Браузер] Запуск изолированного контекста Chromium...", flush=True)
