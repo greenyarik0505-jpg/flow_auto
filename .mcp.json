@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "google-flow": {
+      "command": "D:\\flow_auto\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "gflow_cli", "mcp", "run"]
+    }
+  }
+}

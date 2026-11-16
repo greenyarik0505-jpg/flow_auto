@@ -82,17 +82,17 @@ def reset_limits(profile: Optional[str] = None) -> None:
                 pass
 
 def normalize_profile_name(selector: Optional[str]) -> str:
-    """Приводит варианты ввода (10, 'Profile 10', 'p10', '#10') к каноническому имени профиля gflow."""
+    """Приводит варианты ввода (1, 10, 'Profile 10', 'p10', '#10', 'Default') к каноническому имени профиля gflow."""
     if not selector:
         return "auto"
     s = str(selector).strip()
     if s.lower() in ("auto", "rotate", "next"):
         return "auto"
+    if s.lower() in ("default", "def"):
+        return "1"
     m = re.match(r"^(?:profile\s*|p|#)(\d+)$", s, re.IGNORECASE)
     if m:
         return m.group(1)
-    if s.lower() == "default":
-        return "default"
     return s
 
 def list_profiles() -> List[Dict[str, Any]]:
@@ -136,6 +136,77 @@ def check_profile_status(profile: str) -> tuple[bool, str]:
         return False, "Не авторизован"
     except Exception as e:
         return False, f"Ошибка проверки: {e}"
+
+def get_unified_profiles() -> List[Dict[str, Any]]:
+    """
+    Возвращает объединенный список профилей:
+    1. Все аккаунты Google Chrome, обнаруженные на компьютере.
+    2. Все сохраненные persistent-профили gflow CLI.
+    """
+    import chrome_profiles
+    chrome_profs = chrome_profiles.get_all_chrome_profiles()
+    gflow_profs = {p["name"]: p for p in list_profiles()}
+    exhausted = get_exhausted_profiles()
+
+    unified = []
+    seen_ids = set()
+
+    for idx, cp in enumerate(chrome_profs, start=1):
+        clean_id = normalize_profile_name(cp["folder"])
+        seen_ids.add(clean_id)
+        
+        gf = gflow_profs.get(clean_id)
+        is_ex = clean_id in exhausted
+        
+        if is_ex:
+            status = "⏳ ЛИМИТ (429)"
+            is_ready = False
+        elif gf and gf.get("has_cookies"):
+            status = "✔ ГОТОВ К РАБОТЕ"
+            is_ready = True
+        else:
+            status = "⏳ ТРЕБУЕТСЯ ВХОД"
+            is_ready = False
+
+        unified.append({
+            "num": idx,
+            "id": clean_id,
+            "folder": cp["folder"],
+            "name": cp["name"],
+            "email": cp.get("email") or (gf.get("email") if gf else "") or "(локальный)",
+            "status": status,
+            "is_ready": is_ready,
+            "in_chrome": True,
+            "in_gflow": gf is not None and bool(gf.get("has_cookies")),
+        })
+
+    for name, gf in gflow_profs.items():
+        if name not in seen_ids:
+            seen_ids.add(name)
+            is_ex = name in exhausted
+            if is_ex:
+                status = "⏳ ЛИМИТ (429)"
+                is_ready = False
+            elif gf.get("has_cookies"):
+                status = "✔ ГОТОВ К РАБОТЕ"
+                is_ready = True
+            else:
+                status = "⏳ ТРЕБУЕТСЯ ВХОД"
+                is_ready = False
+
+            unified.append({
+                "num": len(unified) + 1,
+                "id": name,
+                "folder": f"profile_{name}",
+                "name": f"gflow #{name}",
+                "email": gf.get("email") or "(вход выполнен)",
+                "status": status,
+                "is_ready": is_ready,
+                "in_chrome": False,
+                "in_gflow": True,
+            })
+
+    return unified
 
 def login(profile: str) -> bool:
     """Запускает авторизацию указанного профиля через gflow auth login с настоящим Chrome."""

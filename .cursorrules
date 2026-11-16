@@ -1,0 +1,9 @@
+# Cursor & Codex Rules for Google Flow
+
+You have access to Google Flow through the `google-flow` MCP server and project scripts in `D:\flow_auto`.
+
+- For video generation: use MCP tool `gflow_generate_video` or run `.\generate.bat <profile> "<prompt>"`.
+- For image generation: use MCP tool `gflow_generate_image` or run `.\generate_image.bat <profile> "<prompt>"`.
+- For multi-account management: accounts are isolated containers (`profile_1`, `profile_2`... `profile_34`).
+- If an account hits HTTP 429 quota limit, switch to the next account or run with `--profile auto`.
+- Check all accounts and readiness via `.\list_profiles.bat`.

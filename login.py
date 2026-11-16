@@ -48,33 +48,32 @@ def parse_profile_range(input_str: str) -> list[str]:
     return result
 
 def show_profiles_table(profiles: list[dict]) -> None:
-    """Выводит красивую таблицу текущего состояния профилей gflow."""
+    """Выводит красивую таблицу текущего состояния профилей Google и gflow."""
     print("=" * 80)
-    print(" 🚀 GOOGLE FLOW: СТАТУС СЕССИЙ АККАУНТОВ (GFLOW CLI)")
+    print(" 🚀 GOOGLE FLOW: ВАШИ АККАУНТЫ GOOGLE И СТАТУС ВХОДА")
     print("=" * 80)
     if not profiles:
-        print(" [i] В базе пока нет авторизованных профилей.")
-        print(" 💡 Вы можете точечно авторизовать любой аккаунт:")
+        print(" [i] Профили Chrome или gflow не найдены.")
+        print(" 💡 Вы можете авторизовать любой аккаунт:")
         print("    .\\login.bat 1")
         print("    .\\login.bat 10")
         print("    .\\login.bat 34")
         print("=" * 80)
         return
 
-    print(f"{'#':<4} | {'Профиль':<12} | {'Google Email':<28} | {'Статус'}")
+    print(f"{'#':<4} | {'ID профиля':<12} | {'Имя в Chrome':<20} | {'Google Email':<26} | {'Статус Flow'}")
     print("-" * 80)
-    for idx, p in enumerate(profiles, start=1):
-        name = p["name"]
-        email = p.get("email", "") or "(вход выполнен)"
-        if len(email) > 26:
-            email = email[:25] + "…"
-        if p.get("is_exhausted"):
-            status = "⏳ ЛИМИТ (429)"
-        elif p.get("has_cookies"):
-            status = "✔ ГОТОВ К РАБОТЕ"
-        else:
-            status = "⚠ ТРЕБУЕТ ВХОДА"
-        print(f"{idx:<4} | {name:<12} | {email:<28} | {status}")
+    for p in profiles:
+        idx = p["num"]
+        pid = p["id"]
+        cname = p["name"]
+        if len(cname) > 18:
+            cname = cname[:17] + "…"
+        email = p.get("email", "") or "(локальный)"
+        if len(email) > 24:
+            email = email[:23] + "…"
+        status = p["status"]
+        print(f"{idx:<4} | {pid:<12} | {cname:<20} | {email:<26} | {status}")
     print("-" * 80)
 
 def main():
@@ -91,7 +90,7 @@ def main():
         print("\n[✔] Кэш исчерпанных лимитов gflow успешно сброшен!\n")
         return
 
-    profiles = gflow_backend.list_profiles()
+    profiles = gflow_backend.get_unified_profiles()
 
     if args.list:
         show_profiles_table(profiles)
