@@ -208,7 +208,57 @@ def get_unified_profiles() -> List[Dict[str, Any]]:
 
     return unified
 
-def prepare_profile_container(clean_name: str, display_name: str = "") -> None:
+def find_system_chrome() -> str:
+    """Определяет путь к исполняемому файлу Google Chrome."""
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return "chrome.exe"
+
+def open_real_chrome(profile: str, url: str = "https://flow.google.com") -> bool:
+    """Запускает настоящий Google Chrome с конкретным профилем пользователя, где уже выполнен вход."""
+    clean_id = normalize_profile_name(profile)
+    folder_name = "Default" if clean_id in ("1", "default") else f"Profile {clean_id}"
+    
+    disp_name = f"Профиль {clean_id}"
+    email_hint = ""
+    # Ищем точные данные из профилей пользователя
+    try:
+        for p in get_unified_profiles():
+            if str(p["id"]).lower() == clean_id.lower():
+                folder_name = p["folder"]
+                disp_name = p["name"]
+                email_hint = p.get("email", "")
+                break
+    except Exception:
+        pass
+
+    chrome_exe = find_system_chrome()
+    cmd = [chrome_exe, f"--profile-directory={folder_name}", url]
+    print("\n" + "=" * 80)
+    print(f" 🚀 ОТКРЫТИЕ ВАШЕГО НАСТОЯЩЕГО GOOGLE CHROME")
+    print("=" * 80)
+    print(f"    Профиль в Chrome : {folder_name} ({disp_name})")
+    if email_hint and email_hint != "(локальный)":
+        print(f"    Google Аккаунт   : {email_hint}")
+    print(f"    Целевой сайт     : {url}")
+    print("=" * 80)
+    print(" [i] Запуск прямого сеанса Chrome с вашим основным аккаунтом.")
+    print("     Никаких гостей и чужих профилей — вы УЖЕ залогинены в Google!")
+    print("=" * 80 + "\n")
+    try:
+        subprocess.Popen(cmd)
+        return True
+    except Exception as e:
+        print(f"[-] Ошибка запуска Chrome: {e}")
+        return False
+
+def prepare_profile_container(clean_name: str, display_name: str = "", email: str = "") -> None:
     """Инициализирует профиль gflow именем и параметрами, чтобы Chrome не выглядел как гость."""
     try:
         home = Path(os.environ.get("GFLOW_CLI_HOME", Path.home() / "AppData" / "Local" / "ffroliva" / "gflow-cli"))
@@ -216,17 +266,42 @@ def prepare_profile_container(clean_name: str, display_name: str = "") -> None:
         def_dir = p_dir / "Default"
         def_dir.mkdir(parents=True, exist_ok=True)
         
-        pref_file = def_dir / "Preferences"
         name = display_name or f"Аккаунт {clean_name}"
-        data = {
+        # 1. Local State с фиксацией Default профиля (чтобы Chrome не создавал 'Profile 2' и не открывал гостя)
+        local_state_file = p_dir / "Local State"
+        ls_data = {
+            "profile": {
+                "last_used": "Default",
+                "info_cache": {
+                    "Default": {
+                        "name": name,
+                        "user_name": email,
+                        "avatar_icon": "chrome://theme/IDR_PROFILE_AVATAR_26",
+                        "is_using_default_name": False
+                    }
+                }
+            }
+        }
+        local_state_file.write_text(json.dumps(ls_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 2. Preferences
+        pref_file = def_dir / "Preferences"
+        pref_data = {
             "profile": {
                 "name": name,
                 "avatar_index": 26,
                 "exit_type": "Normal"
+            },
+            "signin": {
+                "allowed": True
             }
         }
-        if not pref_file.exists():
-            pref_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        pref_file.write_text(json.dumps(pref_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 3. Удаляем случайные подпапки 'Profile X' внутри p_dir, чтобы Chrome всегда открывал Default
+        for item in p_dir.iterdir():
+            if item.is_dir() and item.name.startswith("Profile "):
+                shutil.rmtree(item, ignore_errors=True)
     except Exception:
         pass
 
@@ -252,7 +327,7 @@ def login(profile: str) -> bool:
         email_hint = ""
 
     # Настраиваем контейнер, чтобы он не выглядел как 'Гость' / Person 1
-    prepare_profile_container(clean_name, disp_name)
+    prepare_profile_container(clean_name, disp_name, email_hint)
 
     cmd = [get_gflow_bin(), "auth", "login", "--profile", clean_name, "--browser", "chrome"]
     print("\n" + "=" * 80)

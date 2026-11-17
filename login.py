@@ -80,6 +80,8 @@ def main():
     parser = argparse.ArgumentParser(description="Google Flow: Точечная авторизация аккаунтов (1..34+ профилей)")
     parser.add_argument("profile", type=str, nargs="?", default=None, help="Номер или имя профиля (например: 10, 'Profile 10', 1-5)")
     parser.add_argument("--profile", dest="profile_opt", type=str, default=None, help="Имя или номер профиля")
+    parser.add_argument("--chrome", action="store_true", help="Открыть ваш РЕАЛЬНЫЙ Google Chrome (где аккаунт уже авторизован)")
+    parser.add_argument("--gflow", action="store_true", help="Запустить авторизацию через фоновый контейнер gflow")
     parser.add_argument("--all", action="store_true", help="Последовательно авторизовать диапазон профилей")
     parser.add_argument("--list", action="store_true", help="Только показать статус всех сохраненных профилей")
     parser.add_argument("--reset-limits", action="store_true", help="Сбросить статус исчерпанных квот/лимитов")
@@ -157,12 +159,30 @@ def main():
 
     if len(targets) == 1:
         target = targets[0]
+        if args.chrome:
+            gflow_backend.open_real_chrome(target)
+            return
+        elif args.gflow:
+            gflow_backend.login(target)
+            return
+
+        # Интерактивный выбор режима для выбранного профиля
         print("\n" + "=" * 80)
-        print(f" 🎯 ТОЧЕЧНЫЙ ВХОД В АККАУНТ #{target}")
+        print(f" 🎯 ВЫБОР РЕЖИМА ДЛЯ АККАУНТА #{target}")
         print("=" * 80)
-        print(f" Выбран ТОЛЬКО аккаунт #{target}. Другие профили НЕ затрагиваются.")
+        print(" [1] Открыть в вашем основном Chrome (где вы УЖЕ вошли в Google) [По умолчанию]")
+        print(" [2] Запустить авторизацию изолированного контейнера gflow")
         print("=" * 80)
-        gflow_backend.login(target)
+        try:
+            mode = input("👉 Выберите вариант [1/2, нажмите Enter для 1]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nОтмена.")
+            return
+
+        if mode == "2":
+            gflow_backend.login(target)
+        else:
+            gflow_backend.open_real_chrome(target)
     else:
         print(f"\n[+] Выбрана авторизация следующих {len(targets)} профилей: {', '.join(targets)}")
         for idx, target in enumerate(targets, start=1):
