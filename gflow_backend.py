@@ -208,18 +208,70 @@ def get_unified_profiles() -> List[Dict[str, Any]]:
 
     return unified
 
+def prepare_profile_container(clean_name: str, display_name: str = "") -> None:
+    """Инициализирует профиль gflow именем и параметрами, чтобы Chrome не выглядел как гость."""
+    try:
+        home = Path(os.environ.get("GFLOW_CLI_HOME", Path.home() / "AppData" / "Local" / "ffroliva" / "gflow-cli"))
+        p_dir = home / f"profile_{clean_name}"
+        def_dir = p_dir / "Default"
+        def_dir.mkdir(parents=True, exist_ok=True)
+        
+        pref_file = def_dir / "Preferences"
+        name = display_name or f"Аккаунт {clean_name}"
+        data = {
+            "profile": {
+                "name": name,
+                "avatar_index": 26,
+                "exit_type": "Normal"
+            }
+        }
+        if not pref_file.exists():
+            pref_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
 def login(profile: str) -> bool:
     """Запускает авторизацию указанного профиля через gflow auth login с настоящим Chrome."""
     clean_name = normalize_profile_name(profile)
     if clean_name == "auto":
         clean_name = "default"
 
+    # Находим данные об аккаунте из Chrome
+    target_info = None
+    try:
+        for p in get_unified_profiles():
+            if str(p["id"]).lower() == clean_name.lower():
+                target_info = p
+                break
+    except Exception:
+        pass
+
+    disp_name = target_info["name"] if target_info else f"Профиль {clean_name}"
+    email_hint = target_info.get("email") if target_info else ""
+    if email_hint == "(локальный)":
+        email_hint = ""
+
+    # Настраиваем контейнер, чтобы он не выглядел как 'Гость' / Person 1
+    prepare_profile_container(clean_name, disp_name)
+
     cmd = [get_gflow_bin(), "auth", "login", "--profile", clean_name, "--browser", "chrome"]
-    print(f"\n" + "=" * 80)
-    print(f" 🚀 АВТОРИЗАЦИЯ GFLOW: ПРОФИЛЬ '{clean_name}'")
+    print("\n" + "=" * 80)
+    print(f" 🚀 АВТОРИЗАЦИЯ GOOGLE FLOW: АККАУНТ #{clean_name}")
     print("=" * 80)
-    print(" 💡 Сейчас откроется чистое окно Google Chrome.")
-    print(" 👉 Войдите в ваш Google аккаунт на странице Flow и после завершения закройте окно Chrome.")
+    print(f"    Имя в системе : {disp_name}")
+    if email_hint:
+        print(f"    Google Email  : {email_hint}")
+    print("=" * 80)
+    print(" 💡 КАК ЭТО РАБОТАЕТ:")
+    print("    1. Сейчас откроется отдельное окно Google Chrome (изолированный контейнер).")
+    print("       (Это НЕ гость — сессия изолируется, чтобы 34 аккаунта не мешали друг другу).")
+    if email_hint:
+        print(f"    2. Нажмите 'Войти' и используйте аккаунт: {email_hint}")
+    else:
+        print("    2. Нажмите 'Войти' и введите данные вашего Google аккаунта.")
+    print("    3. Дождитесь загрузки студии Flow (поле ввода промпта).")
+    print("    4. После открытия Flow просто закройте окно Chrome.")
+    print("       Сессия сохранится навсегда, повторный вход больше не потребуется!")
     print("=" * 80 + "\n")
 
     try:
@@ -232,11 +284,12 @@ def login(profile: str) -> bool:
                     email = p.get("email", "")
                     break
             print("\n" + "=" * 80)
-            print(f" [✔] ПРОФИЛЬ '{clean_name}' УСПЕШНО АВТОРИЗОВАН!")
-            if email:
-                print(f"     Google Email : {email}")
+            print(f" [✔] АККАУНТ #{clean_name} УСПЕШНО АВТОРИЗОВАН!")
+            if email or email_hint:
+                print(f"     Google Email : {email or email_hint}")
             print("     Сессия надежно сохранена в SQLite базе данных gflow.")
-            print(f"     Команда запуска: .\\generate.bat {clean_name} \"Ваш промпт\"")
+            print(f"     Команда генерации видео: .\\generate.bat {clean_name} \"Ваш промпт\"")
+            print(f"     Команда генерации фото:  .\\generate_image.bat {clean_name} \"Ваш промпт\"")
             print("=" * 80 + "\n")
             return True
         else:
