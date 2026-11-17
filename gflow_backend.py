@@ -253,6 +253,13 @@ def open_real_chrome(profile: str, url: str = "https://flow.google.com") -> bool
     print("=" * 80 + "\n")
     try:
         subprocess.Popen(cmd)
+        print("[✔] Google Chrome успешно запущен с вашим профилем!")
+        print("💡 Окно браузера открыто на странице Google Flow.")
+        print("-" * 80)
+        try:
+            input("👉 Нажмите [Enter] в этой консоли, когда закончите работу: ")
+        except (KeyboardInterrupt, EOFError):
+            pass
         return True
     except Exception as e:
         print(f"[-] Ошибка запуска Chrome: {e}")
